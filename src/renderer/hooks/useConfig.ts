@@ -19,6 +19,7 @@ import {
     saveCustomProvider as saveCustomProviderService,
     deleteCustomProvider as deleteCustomProviderService,
     ensureBundledWorkspace,
+    updateImBotConfig,
 } from '@/config/configService';
 import { CUSTOM_EVENTS } from '../../shared/constants';
 import {
@@ -130,6 +131,33 @@ export function useConfig(): UseConfigResult {
                 loadApiKeysService(),
                 loadProviderVerifyStatusService(),
             ]);
+
+            // Migration: ensure enabled IM bots have availableProvidersJson persisted
+            // This runs BEFORE Rust schedule_auto_start (3s delay), so auto-started bots get the data
+            const imBots = loadedConfig.imBotConfigs ?? [];
+            const botsNeedingSync = imBots.filter(b => b.enabled && !b.availableProvidersJson);
+            if (botsNeedingSync.length > 0) {
+                const mergedProviders = mergePresetCustomModels(loadedProviders, loadedConfig.presetCustomModels);
+                const availableProviders = mergedProviders
+                    .filter(p => p.type === 'subscription' || (p.type === 'api' && loadedApiKeys[p.id]))
+                    .map(p => ({
+                        id: p.id, name: p.name, primaryModel: p.primaryModel,
+                        baseUrl: p.config.baseUrl, authType: p.authType,
+                        apiKey: p.type !== 'subscription' ? loadedApiKeys[p.id] : undefined,
+                        models: p.models.map(m => ({ model: m.model, modelName: m.modelName })),
+                    }));
+                if (availableProviders.length > 0) {
+                    const json = JSON.stringify(availableProviders);
+                    // Write to disk before Rust auto-start (3s delay) picks up config.json
+                    for (const bot of botsNeedingSync) {
+                        try {
+                            await updateImBotConfig(bot.id, { availableProvidersJson: json });
+                        } catch (e) {
+                            console.warn(`[useConfig] Failed to sync availableProvidersJson for bot ${bot.id}:`, e);
+                        }
+                    }
+                }
+            }
 
             setConfig(loadedConfig);
             setProjects(loadedProjects);

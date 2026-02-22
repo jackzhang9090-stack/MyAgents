@@ -96,6 +96,7 @@ export default function ImBotList({
                 baseUrl: selectedProvider.config.baseUrl,
                 apiKey: apiKeys[selectedProvider.id],
                 authType: selectedProvider.authType,
+                apiProtocol: selectedProvider.apiProtocol,
             });
         }
 
@@ -108,6 +109,7 @@ export default function ImBotList({
                 baseUrl: p.config.baseUrl,
                 authType: p.authType,
                 apiKey: p.type !== 'subscription' ? apiKeys[p.id] : undefined,
+                models: p.models.map(m => ({ model: m.model, modelName: m.modelName })),
             }));
 
         const allServers = await getAllMcpServers();
@@ -179,7 +181,11 @@ export default function ImBotList({
                 if (isMountedRef.current) {
                     setStatuses(prev => ({ ...prev, [botId]: newStatus }));
                     toastRef.current.success(`${cfg.name} 已启动`);
-                    await updateImBotConfig(botId, { enabled: true, providerEnvJson: params.providerEnvJson || undefined });
+                    await updateImBotConfig(botId, {
+                        enabled: true,
+                        providerEnvJson: params.providerEnvJson || undefined,
+                        availableProvidersJson: params.availableProvidersJson || undefined,
+                    });
                 }
             }
         } catch (err) {

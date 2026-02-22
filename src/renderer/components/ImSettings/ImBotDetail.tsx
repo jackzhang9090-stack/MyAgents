@@ -170,6 +170,29 @@ export default function ImBotDetail({
         };
     }, [botId, refreshConfig]);
 
+    // Listen for AI config changes (Rust /provider or /model commands persist to config.json)
+    useEffect(() => {
+        if (!isTauriEnvironment()) return;
+        let cancelled = false;
+        let unlisten: (() => void) | undefined;
+
+        import('@tauri-apps/api/event').then(({ listen }) => {
+            if (cancelled) return;
+            listen<{ botId: string }>('im:ai-config-changed', (event) => {
+                if (!isMountedRef.current || event.payload.botId !== botId) return;
+                refreshConfig();
+            }).then(fn => {
+                if (cancelled) fn();
+                else unlisten = fn;
+            });
+        });
+
+        return () => {
+            cancelled = true;
+            unlisten?.();
+        };
+    }, [botId, refreshConfig]);
+
     // Build start params
     const buildStartParams = useCallback(async (cfg: ImBotConfig) => {
         const selectedProvider = providers.find(p => p.id === cfg.providerId);
@@ -179,6 +202,7 @@ export default function ImBotDetail({
                 baseUrl: selectedProvider.config.baseUrl,
                 apiKey: apiKeys[selectedProvider.id],
                 authType: selectedProvider.authType,
+                apiProtocol: selectedProvider.apiProtocol,
             });
         }
 
@@ -190,7 +214,9 @@ export default function ImBotDetail({
                 primaryModel: p.primaryModel,
                 baseUrl: p.config.baseUrl,
                 authType: p.authType,
+                apiProtocol: p.apiProtocol,
                 apiKey: p.type !== 'subscription' ? apiKeys[p.id] : undefined,
+                models: p.models.map(m => ({ model: m.model, modelName: m.modelName })),
             }));
 
         const allServers = await getAllMcpServers();
@@ -251,7 +277,11 @@ export default function ImBotDetail({
                 await invoke('cmd_start_im_bot', params);
                 if (isMountedRef.current) {
                     toastRef.current.success('Bot 已启动');
-                    await saveBotField({ enabled: true, providerEnvJson: params.providerEnvJson || undefined });
+                    await saveBotField({
+                        enabled: true,
+                        providerEnvJson: params.providerEnvJson || undefined,
+                        availableProvidersJson: params.availableProvidersJson || undefined,
+                    });
                 }
             }
         } catch (err) {
@@ -561,17 +591,21 @@ export default function ImBotDetail({
                             baseUrl: provider.config.baseUrl,
                             apiKey: apiKeys[provider.id],
                             authType: provider.authType,
+                            apiProtocol: provider.apiProtocol,
                         });
                     }
-                    // Persist providerId + model + providerEnvJson (undefined clears old value)
-                    await saveBotField({ providerId: providerId || undefined, model: newModel, providerEnvJson });
                     const availableProvidersList = providers
                         .filter(p => p.type === 'subscription' || (p.type === 'api' && apiKeys[p.id]))
                         .map(p => ({
                             id: p.id, name: p.name, primaryModel: p.primaryModel,
                             baseUrl: p.config.baseUrl, authType: p.authType,
+                            apiProtocol: p.apiProtocol,
                             apiKey: p.type !== 'subscription' ? apiKeys[p.id] : undefined,
+                            models: p.models.map(m => ({ model: m.model, modelName: m.modelName })),
                         }));
+                    // Persist providerId + model + providerEnvJson + availableProvidersJson
+                    const availableProvidersJsonStr = availableProvidersList.length > 0 ? JSON.stringify(availableProvidersList) : undefined;
+                    await saveBotField({ providerId: providerId || undefined, model: newModel, providerEnvJson, availableProvidersJson: availableProvidersJsonStr });
                     await hotUpdateRunning('cmd_update_im_bot_ai_config', {
                         model: newModel || null,
                         // Empty string = explicit clear (subscription); null would mean "don't change"

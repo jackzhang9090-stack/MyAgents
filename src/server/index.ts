@@ -103,6 +103,8 @@ import {
   rewindSession,
   getPendingInteractiveRequests,
   stripPlaywrightResults,
+  setSidecarPort,
+  getOpenAiBridgeConfig,
   type ProviderEnv,
 } from './agent-session';
 import { getHomeDirOrNull } from './utils/platform';
@@ -123,6 +125,7 @@ import { cleanupOldLogs } from './AgentLogger';
 import { cleanupOldUnifiedLogs, appendUnifiedLogBatch } from './UnifiedLogger';
 import { broadcast, createSseClient, getClients } from './sse';
 import { checkAnthropicSubscription, getGitBranch, verifyProviderViaSdk, verifySubscription } from './provider-verify';
+import { createBridgeHandler } from './openai-bridge';
 
 type ImagePayload = {
   name: string;
@@ -165,6 +168,8 @@ type SendMessagePayload = {
   providerEnv?: {
     baseUrl?: string;
     apiKey?: string;
+    authType?: 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key';
+    apiProtocol?: 'anthropic' | 'openai';
   };
 };
 
@@ -181,6 +186,8 @@ type CronExecutePayload = {
   providerEnv?: {
     baseUrl?: string;
     apiKey?: string;
+    authType?: 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key';
+    apiProtocol?: 'anthropic' | 'openai';
   };
   /** Run mode: "single_session" (keep context) or "new_session" (fresh each time) */
   runMode?: 'single_session' | 'new_session';
@@ -641,6 +648,20 @@ async function main() {
   seedBundledSkills();
 
   await initializeAgent(currentAgentDir, initialPrompt, initialSessionId);
+
+  // Store sidecar port for OpenAI bridge loopback
+  setSidecarPort(port);
+
+  // Create OpenAI bridge handler (lazy: only processes requests when bridge config is active)
+  const bridgeHandler = createBridgeHandler({
+    getUpstreamConfig: () => {
+      const config = getOpenAiBridgeConfig();
+      if (!config) throw new Error('Bridge not active');
+      return { baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model };
+    },
+    maxOutputTokens: 8192,
+    logger: (msg) => console.log(msg),
+  });
 
   Bun.serve({
     port,
@@ -2392,6 +2413,61 @@ async function main() {
         }
       }
 
+      // GET /api/logs/export - Export recent unified logs as zip
+      if (pathname === '/api/logs/export' && request.method === 'GET') {
+        try {
+          const { readdirSync, statSync } = await import('fs');
+          const { join: joinPath } = await import('path');
+          const { homedir } = await import('os');
+          const logsDir = joinPath(homedir(), '.myagents', 'logs');
+
+          // Collect last 3 days of unified-*.log files
+          const now = Date.now();
+          const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+          const files = readdirSync(logsDir)
+            .filter(f => f.startsWith('unified-') && f.endsWith('.log'))
+            .filter(f => {
+              try {
+                return now - statSync(joinPath(logsDir, f)).mtimeMs < threeDaysMs;
+              } catch { return false; }
+            })
+            .sort();
+
+          if (files.length === 0) {
+            return jsonResponse({ success: false, error: '没有找到近3天的运行日志' }, 404);
+          }
+
+          // Output to Desktop
+          const desktopDir = joinPath(homedir(), 'Desktop');
+          const timestamp = new Date().toISOString().slice(0, 10);
+          const zipName = `MyAgents-logs-${timestamp}.zip`;
+          const zipPath = joinPath(desktopDir, zipName);
+
+          // Create zip using platform-appropriate command
+          const isWin = process.platform === 'win32';
+          const filePaths = files.map(f => joinPath(logsDir, f));
+
+          if (isWin) {
+            // PowerShell Compress-Archive
+            const proc = Bun.spawn(['powershell', '-Command',
+              `Compress-Archive -Path '${filePaths.join("','")}' -DestinationPath '${zipPath}' -Force`
+            ]);
+            await proc.exited;
+          } else {
+            // macOS/Linux: zip command
+            const proc = Bun.spawn(['zip', '-j', zipPath, ...filePaths]);
+            await proc.exited;
+          }
+
+          return jsonResponse({ success: true, path: zipPath });
+        } catch (error) {
+          return jsonResponse({
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to export logs'
+          }, 500);
+        }
+      }
+
       // ============= PROVIDER VERIFICATION API =============
 
       // POST /api/provider/verify - Verify API key via SDK (same path as normal chat)
@@ -2402,9 +2478,10 @@ async function main() {
             apiKey?: string;
             model?: string;
             authType?: string;
+            apiProtocol?: string;
           };
 
-          const { baseUrl, apiKey, model, authType } = payload;
+          const { baseUrl, apiKey, model, authType, apiProtocol } = payload;
 
           if (!baseUrl || !apiKey) {
             return jsonResponse({ success: false, error: 'baseUrl and apiKey are required.' }, 400);
@@ -2415,8 +2492,15 @@ async function main() {
           console.log(`[api/provider/verify] apiKey: ${apiKey.slice(0, 10)}...`);
           console.log(`[api/provider/verify] model: ${model ?? 'default'}`);
           console.log(`[api/provider/verify] authType: ${authType ?? 'both'}`);
+          console.log(`[api/provider/verify] apiProtocol: ${apiProtocol ?? 'anthropic'}`);
 
-          const result = await verifyProviderViaSdk(baseUrl, apiKey, authType ?? 'both', model || undefined);
+          // Unified SDK verification for all protocols (Anthropic + OpenAI)
+          // For OpenAI protocol: SDK → CLI → bridge loopback → upstream (end-to-end)
+          // For Anthropic protocol: SDK → CLI → upstream (same as before)
+          const result = await verifyProviderViaSdk(
+            baseUrl, apiKey, authType ?? 'both', model || undefined,
+            apiProtocol === 'openai' ? 'openai' : undefined,
+          );
 
           console.log(`[api/provider/verify] result:`, JSON.stringify(result));
           console.log(`[api/provider/verify] =========================`);
@@ -4526,6 +4610,7 @@ async function main() {
             senderName?: string;
             permissionMode?: string;
             providerEnv?: ProviderEnv;
+            model?: string;
             images?: Array<{ name: string; mimeType: string; data: string }>;
             botId?: string;
           };
@@ -4543,11 +4628,13 @@ async function main() {
               chatId: payload.sourceId,
               platform: payload.source.split('_')[0], // "telegram" or "feishu"
               workspacePath: agentDir,
-              model: getSessionModel(),
+              model: payload.model ?? getSessionModel(),
               permissionMode: payload.permissionMode,
               providerEnv: payload.providerEnv ? {
                 baseUrl: payload.providerEnv.baseUrl,
                 apiKey: payload.providerEnv.apiKey,
+                authType: payload.providerEnv.authType,
+                apiProtocol: payload.providerEnv.apiProtocol,
               } : undefined,
             });
           }
@@ -4571,7 +4658,7 @@ async function main() {
             payload.message || '',
             payload.images, // forward image attachments from Telegram
             (payload.permissionMode as PermissionMode) ?? 'plan',
-            undefined, // model: already set via /api/model/set, not per-message
+            payload.model ?? undefined, // model: per-message from Rust /model command
             payload.providerEnv ?? undefined, // providerEnv: forwarded from Rust IM
             metadata,
           );
@@ -4908,6 +4995,43 @@ async function main() {
       }
 
       // ============= END IM BOT API =============
+
+      // ============= OPENAI BRIDGE (Loopback) =============
+      // SDK subprocess sends Anthropic requests here when provider uses OpenAI protocol
+      if (pathname === '/v1/messages' && request.method === 'POST') {
+        const bridgeConfig = getOpenAiBridgeConfig();
+        if (bridgeConfig) {
+          try {
+            return await bridgeHandler(request);
+          } catch (error) {
+            console.error('[bridge] Handler error:', error);
+            return jsonResponse(
+              { type: 'error', error: { type: 'api_error', message: error instanceof Error ? error.message : 'Bridge error' } },
+              500,
+            );
+          }
+        }
+        // Bridge not active — fall through to 404
+      }
+
+      // POST /v1/messages/count_tokens — CLI sends this for context window management.
+      // OpenAI-compatible APIs have no equivalent, so return an estimated token count.
+      if (pathname === '/v1/messages/count_tokens' && request.method === 'POST') {
+        const bridgeConfig = getOpenAiBridgeConfig();
+        if (bridgeConfig) {
+          try {
+            const body = await request.json() as { messages?: unknown[]; system?: unknown; tools?: unknown[] };
+            // Rough estimate: serialize content → chars / 4 ≈ tokens
+            const contentLength = JSON.stringify(body.messages ?? []).length
+              + JSON.stringify(body.system ?? '').length
+              + JSON.stringify(body.tools ?? []).length;
+            const estimatedTokens = Math.max(1, Math.ceil(contentLength / 4));
+            return jsonResponse({ input_tokens: estimatedTokens });
+          } catch {
+            return jsonResponse({ input_tokens: 1024 }); // Safe fallback
+          }
+        }
+      }
 
       const staticResponse = await serveStatic(pathname);
       if (staticResponse) {

@@ -177,6 +177,7 @@ export default function ImBotWizard({
                 baseUrl: selectedProvider.config.baseUrl,
                 apiKey: apiKeys[selectedProvider.id],
                 authType: selectedProvider.authType,
+                apiProtocol: selectedProvider.apiProtocol,
             });
         }
 
@@ -189,6 +190,7 @@ export default function ImBotWizard({
                 baseUrl: p.config.baseUrl,
                 authType: p.authType,
                 apiKey: p.type !== 'subscription' ? apiKeys[p.id] : undefined,
+                models: p.models.map(m => ({ model: m.model, modelName: m.modelName })),
             }));
 
         const allServers = await getAllMcpServers();
@@ -278,8 +280,11 @@ export default function ImBotWizard({
                     if (latestBotConfig) {
                         const params = await buildStartParams(latestBotConfig);
                         const status = await invoke<ImBotStatus>('cmd_start_im_bot', params);
-                        // Write back providerEnvJson for Rust auto-start
-                        await updateImBotConfig(botId, { providerEnvJson: params.providerEnvJson || undefined });
+                        // Write back providerEnvJson + availableProvidersJson for Rust auto-start
+                        await updateImBotConfig(botId, {
+                            providerEnvJson: params.providerEnvJson || undefined,
+                            availableProvidersJson: params.availableProvidersJson || undefined,
+                        });
                         if (isMountedRef.current) {
                             setBotStatus(status);
                         }
@@ -355,8 +360,11 @@ export default function ImBotWizard({
             const { invoke } = await import('@tauri-apps/api/core');
             const params = await buildStartParams(newConfig);
             const status = await invoke<ImBotStatus>('cmd_start_im_bot', params);
-            // Write back providerEnvJson for Rust auto-start
-            await updateImBotConfig(botId, { providerEnvJson: params.providerEnvJson || undefined });
+            // Write back providerEnvJson + availableProvidersJson for Rust auto-start
+            await updateImBotConfig(botId, {
+                providerEnvJson: params.providerEnvJson || undefined,
+                availableProvidersJson: params.availableProvidersJson || undefined,
+            });
 
             if (isMountedRef.current) {
                 setVerifyStatus('valid');
