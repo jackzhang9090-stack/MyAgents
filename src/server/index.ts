@@ -1685,10 +1685,13 @@ async function main() {
           return jsonResponse({ error: 'File not found.' }, 404);
         }
         const name = basename(resolvedPath);
+        // RFC 5987: use filename* with UTF-8 encoding for non-ASCII filenames
+        // Bun throws on non-ASCII characters in header values, causing 500 for Chinese filenames
+        const encodedName = encodeURIComponent(name);
         return new Response(file, {
           headers: {
             'Content-Type': file.type || 'application/octet-stream',
-            'Content-Disposition': `attachment; filename="${name}"`
+            'Content-Disposition': `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`
           }
         });
       }
