@@ -112,6 +112,8 @@ await apiPostJson('/api/mcp/set', { servers }); // 会发到 Global Sidecar！
 前端 ──(invoke)──> Rust Proxy ──(reqwest)──> Bun Sidecar
 ```
 
+**reqwest 本地连接必须 `.no_proxy()`**：所有连接本地 Sidecar（`127.0.0.1`）的 `reqwest::Client` 必须调用 `.no_proxy()` 禁用系统代理。中国用户普遍使用 Clash/V2Ray 等代理工具，reqwest 默认走系统代理会导致 localhost 请求被路由到代理服务器返回 502。参考 `create_sidecar_http_client()` 的标准写法。
+
 ### 3. 零外部依赖
 
 应用内置 Bun 运行时，**不依赖用户系统的 Node.js/npm/npx**：
@@ -348,6 +350,8 @@ await updateImBotConfig(botId, updates);
 | 在 main 分支直接提交 | 破坏主分支稳定性 | 切换到 dev 分支 |
 | 未经确认合并到 main | 绕过测试流程 | 先询问用户确认 |
 | 后端新增 SSE 事件不注册白名单 | 前端永远收不到该事件（静默丢弃） | 在 `SseConnection.ts` 的 `JSON_EVENTS` 中注册新事件名 |
+| `reqwest::Client` 连接本地 Sidecar 不加 `.no_proxy()` | 系统代理（Clash/V2Ray）拦截 localhost 请求 → 502 Bad Gateway | 所有连接 `127.0.0.1` 的 reqwest Client 必须 `.no_proxy()`，参考 `create_sidecar_http_client()` |
+| Bun 侧日志用 UTC 日期、Rust 侧用本地日期 | 三来源日志写入不同文件，排查时找不到完整日志 | 统一使用本地日期（`UnifiedLogger.ts` 的 `getTodayDate()`） |
 
 ---
 
@@ -487,6 +491,7 @@ log::info!("internal message");
 | IM Bot 启停按钮不响应 | 检查 `cmd_start/stop_im_bot` 参数、Sidecar 端口冲突 |
 | IM Bot 连接/消息异常 | **主动查** `~/.myagents/logs/unified-{today}.log` 搜 `[feishu]` `[im]` `[telegram]` |
 | AI 无响应/超时 | **主动查** 统一日志搜 `[agent]` `pre-warm` `timeout` |
+| Heartbeat/本地 API 调用 502 | reqwest 缺少 `.no_proxy()` → 请求走了系统代理。检查 HTTP client 是否有 `.no_proxy()` |
 
 ---
 
