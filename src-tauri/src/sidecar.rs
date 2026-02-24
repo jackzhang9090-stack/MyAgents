@@ -2655,6 +2655,10 @@ pub struct CronExecuteResponse {
     pub exit_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_text: Option<String>,
+    /// Internal SDK session ID where conversation data is stored
+    /// (may differ from the Sidecar session key used for process management)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// Execute a cron task synchronously via Sidecar HTTP API

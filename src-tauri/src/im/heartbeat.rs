@@ -66,8 +66,9 @@ impl HeartbeatRunner {
             last_push_text: Arc::new(Mutex::new(None)),
             http_client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(330)) // 5.5 min (heartbeat timeout is 5 min)
+                .no_proxy() // All requests are to local Sidecars (127.0.0.1)
                 .build()
-                .unwrap_or_default(),
+                .expect("Failed to create heartbeat HTTP client"),
             executing: Arc::new(Mutex::new(false)),
             current_model,
             mcp_servers_json,
@@ -323,10 +324,22 @@ impl HeartbeatRunner {
 
         let result = match self.http_client.post(&url).json(&request).send().await {
             Ok(resp) => {
-                match resp.json::<HeartbeatResponse>().await {
+                let status_code = resp.status();
+                // Read body as text first for diagnostic logging on parse failure
+                let body_text = match resp.text().await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        ulog_warn!("[heartbeat] Failed to read response body: {} (status={})", e, status_code);
+                        *self.executing.lock().await = false;
+                        return;
+                    }
+                };
+                match serde_json::from_str::<HeartbeatResponse>(&body_text) {
                     Ok(r) => r,
                     Err(e) => {
-                        ulog_warn!("[heartbeat] Failed to parse response: {}", e);
+                        // Log truncated body for debugging (cap at 300 chars)
+                        let preview = if body_text.len() > 300 { &body_text[..300] } else { &body_text };
+                        ulog_warn!("[heartbeat] Failed to parse response: {} (status={}, body={})", e, status_code, preview);
                         *self.executing.lock().await = false;
                         return;
                     }

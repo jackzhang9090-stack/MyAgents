@@ -318,15 +318,17 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
     onExecutionComplete: async (task, success) => {
       // Called when a single execution completes (task may still be running)
       // Refresh the session to show the latest messages
-      // Use task.sessionId (the cron task's actual session) instead of Chat's sessionId
-      // which may be a pending/different session
-      console.log('[Chat] Cron execution complete, refreshing session:', task.id, task.executionCount, 'taskSessionId:', task.sessionId, 'success:', success);
+      // Use internalSessionId (actual SDK session) when available, falling back to sessionId.
+      // For IM Bot cron tasks, sessionId is the Sidecar session key (cron-im-*) which has
+      // no conversation data — the data is stored under the internal SDK session UUID.
+      const effectiveSessionId = task.internalSessionId || task.sessionId;
+      console.log('[Chat] Cron execution complete, refreshing session:', task.id, task.executionCount, 'effectiveSessionId:', effectiveSessionId, 'success:', success);
       setIsLoading(false);
       // Only refresh session on successful execution.
       // On timeout (success=false), the original streaming task may still be running
       // and calling loadSession would abort it (via switchToSession) and lose data.
-      if (success && task.sessionId) {
-        await loadSession(task.sessionId);
+      if (success && effectiveSessionId) {
+        await loadSession(effectiveSessionId);
       }
     },
     // Register for SSE cron:task-exit-requested events via TabContext

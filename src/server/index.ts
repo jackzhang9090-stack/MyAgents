@@ -1252,11 +1252,16 @@ async function main() {
 
           console.log(`[cron] execute-sync taskId=${taskId} completed, aiRequestedExit=${aiRequestedExit}, exitReason=${exitReason}`);
 
+          // Return the actual internal SDK session ID so Rust can track where
+          // conversation data is stored (may differ from the Sidecar session key)
+          const actualSessionId = getSessionId();
+
           const response = {
             success: true,
             aiRequestedExit,
             exitReason,
             outputText: textContent || undefined,
+            sessionId: actualSessionId,
           };
           console.log(`[cron] execute-sync taskId=${taskId} returning response:`, JSON.stringify(response));
           return jsonResponse(response);
@@ -4876,6 +4881,9 @@ async function main() {
 
       // POST /api/im/heartbeat — Execute a heartbeat check (synchronous JSON response, not SSE)
       if (pathname === '/api/im/heartbeat' && request.method === 'POST') {
+        // Track drained events so they can be re-queued on pre-enqueue failures
+        let drainedEvents: Array<{ event: string; content: string; timestamp: number; taskId?: string }> = [];
+        let messageEnqueued = false;
         try {
           const payload = await request.json() as {
             prompt: string;
@@ -4907,14 +4915,14 @@ async function main() {
           }
 
           // Drain pending system events
-          const pendingEvents = drainSystemEvents();
+          drainedEvents = drainSystemEvents();
 
           // Separate cron events from other events
-          const cronEvents = pendingEvents.filter(e => e.event === 'cron_complete');
-          const otherEvents = pendingEvents.filter(e => e.event !== 'cron_complete');
+          const cronEvents = drainedEvents.filter(e => e.event === 'cron_complete');
+          const otherEvents = drainedEvents.filter(e => e.event !== 'cron_complete');
 
           // Skip AI call if HEARTBEAT.md is empty AND no system events AND not high-priority
-          if (!heartbeatMdContent && pendingEvents.length === 0 && !payload.isHighPriority) {
+          if (!heartbeatMdContent && drainedEvents.length === 0 && !payload.isHighPriority) {
             console.log('[im/heartbeat] Skipped: HEARTBEAT.md is empty and no pending events');
             return jsonResponse({ status: 'silent', reason: 'empty_heartbeat_md' });
           }
@@ -4959,6 +4967,7 @@ async function main() {
               sourceId: payload.sourceId,
             },
           );
+          messageEnqueued = true; // Events are now in the AI prompt — do NOT re-queue
 
           // Wait for AI to finish (5 min timeout)
           const completed = await waitForSessionIdle(300000, 500);
@@ -4992,6 +5001,14 @@ async function main() {
 
           return jsonResponse(result);
         } catch (error) {
+          // Re-queue drained events only if they weren't yet sent to the AI
+          // (after enqueueUserMessage, events are in the AI prompt — re-queuing would duplicate)
+          if (!messageEnqueued && drainedEvents.length > 0) {
+            for (const e of drainedEvents) {
+              systemEventQueue.push(e);
+            }
+            console.warn(`[im/heartbeat] Re-queued ${drainedEvents.length} drained events after pre-enqueue failure`);
+          }
           console.error('[im/heartbeat] Error:', error);
           return jsonResponse(
             { status: 'error', text: error instanceof Error ? error.message : 'Heartbeat error' },

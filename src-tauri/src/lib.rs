@@ -46,6 +46,7 @@ pub fn run() {
     let sidecar_state_for_exit = sidecar_state.clone();
     let sidecar_state_for_tray_exit = sidecar_state.clone();
 
+    let im_state_for_management = im_bot_state.clone();
     let im_state_for_window = im_bot_state.clone();
     let im_state_for_exit = im_bot_state.clone();
     let im_state_for_tray_exit = im_bot_state.clone();
@@ -219,6 +220,9 @@ pub fn run() {
                     log::info!("[App] Windows: Disabled system decorations for custom title bar");
                 }
             }
+
+            // Inject IM state into management API (for /api/im/wake endpoint)
+            management_api::set_im_bots_state(im_state_for_management);
 
             // Start management API (internal HTTP server for Bun→Rust IPC)
             tauri::async_runtime::spawn(async move {
