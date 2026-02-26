@@ -5,6 +5,7 @@ import { createRequire } from 'module';
 import { query, type Query, type SDKUserMessage, type AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { getScriptDir, getBundledBunDir } from './utils/runtime';
 import { getCrossPlatformEnv } from './utils/platform';
+import { resizeImageIfNeeded } from './utils/imageResize';
 import { cronToolsServer, getCronTaskContext, clearCronTaskContext } from './tools/cron-tools';
 import { imCronToolServer, getImCronContext } from './tools/im-cron-tool';
 
@@ -143,6 +144,8 @@ const toolResultIndexToId: Map<number, string> = new Map();
 // IM Draft Stream: callback for streaming text to Telegram
 type ImStreamCallback = (event: 'delta' | 'block-end' | 'complete' | 'error' | 'permission-request' | 'activity', data: string) => void;
 let imStreamCallback: ImStreamCallback | null = null;
+// Group chat tool deny list (v0.1.28): set per IM message, cleared on next non-group request
+let currentGroupToolsDeny: string[] = [];
 // Flag: auto-reset session after image content pollutes conversation history
 let shouldResetSessionAfterError = false;
 // Track text block indices for detecting text-type content_block_stop
@@ -1504,6 +1507,11 @@ function localizeImError(rawError: string): string {
     return rawError.substring(0, 100) + '...';
   }
   return rawError;
+}
+
+/** Set group tool deny list for current IM request (v0.1.28) */
+export function setGroupToolsDeny(tools: string[]): void {
+  currentGroupToolsDeny = tools;
 }
 
 export function setImStreamCallback(cb: ImStreamCallback | null): void {
@@ -3103,14 +3111,16 @@ export async function enqueueUserMessage(
   > = [];
 
   // Add images first so Claude can see them before the text query
+  // Images are resized server-side to stay within API limits (max 2000px → 1920px)
   if (hasImages) {
     for (const img of images) {
+      const processed = await resizeImageIfNeeded(img);
       contentBlocks.push({
         type: 'image',
         source: {
           type: 'base64',
-          media_type: img.mimeType,
-          data: img.data,
+          media_type: processed.mimeType,
+          data: processed.data,
         },
       });
     }
@@ -3436,8 +3446,36 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
   try {
     const sdkPermissionMode = mapToSdkPermissionMode(currentPermissionMode);
-    // 单一变量决策：sessionRegistered 为 true 则 resume，否则创建新 session
-    const resumeFrom = sessionRegistered ? sessionId : undefined;
+
+    // Resolve SDK-compatible session ID for resume/create.
+    // SDK requires valid UUID format for --resume (and --session-id).
+    // Our internal sessionId may have a prefix (e.g., old cron-im-{uuid} format).
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    let resumeFrom: string | undefined;
+    let effectiveSdkSessionId: string;
+
+    if (sessionRegistered) {
+      // Prefer sdkSessionId from metadata (the actual ID the SDK knows)
+      const meta = getSessionMetadata(sessionId);
+      const sdkSid = meta?.sdkSessionId;
+
+      if (sdkSid && UUID_RE.test(sdkSid)) {
+        resumeFrom = sdkSid;
+        effectiveSdkSessionId = sdkSid;
+      } else if (UUID_RE.test(sessionId)) {
+        resumeFrom = sessionId;
+        effectiveSdkSessionId = sessionId;
+      } else {
+        // Non-UUID session ID (e.g., old cron-im-{uuid}) — cannot resume, start fresh
+        console.warn(`[agent] Session ${sessionId} has non-UUID ID (sdkSid=${sdkSid}), cannot resume — starting fresh`);
+        resumeFrom = undefined;
+        effectiveSdkSessionId = randomUUID();
+      }
+    } else {
+      resumeFrom = undefined;
+      // For new sessions, ensure SDK gets a valid UUID
+      effectiveSdkSessionId = UUID_RE.test(sessionId) ? sessionId : randomUUID();
+    }
     // sessionRegistered 不在此处修改 — 等待 system_init 确认
 
     // 消费 rewind 设置的对话截断点
@@ -3447,7 +3485,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     if (rewindResumeAt) pendingResumeSessionAt = undefined;
 
     const mcpStatus = currentMcpServers === null ? 'auto' : currentMcpServers.length === 0 ? 'disabled' : `enabled(${currentMcpServers.length})`;
-    console.log(`[agent] starting query with model: ${currentModel ?? 'default'}, permissionMode: ${currentPermissionMode} -> SDK: ${sdkPermissionMode}, MCP: ${mcpStatus}, ${resumeFrom ? `resume: ${resumeFrom}` : `sessionId: ${sessionId}`}${rewindResumeAt ? `, resumeSessionAt: ${rewindResumeAt}` : ''}`);
+    console.log(`[agent] starting query with model: ${currentModel ?? 'default'}, permissionMode: ${currentPermissionMode} -> SDK: ${sdkPermissionMode}, MCP: ${mcpStatus}, ${resumeFrom ? `resume: ${resumeFrom}` : `sessionId: ${effectiveSdkSessionId}`}${rewindResumeAt ? `, resumeSessionAt: ${rewindResumeAt}` : ''}`);
 
     const promptGen = messageGenerator();
 
@@ -3490,6 +3528,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // When agents are injected, ensure 'Task' tool is in allowedTools so the model can delegate
       ...(currentAgentDefinitions && Object.keys(currentAgentDefinitions).length > 0
         ? { agents: currentAgentDefinitions, allowedTools: ['Task'] } : {}),
+      // Group chat tool deny list (v0.1.28): use SDK disallowedTools instead of canUseTool
+      // because canUseTool is skipped in bypassPermissions mode (IM Bot default: fullAgency)
+      ...(currentGroupToolsDeny.length > 0 ? { disallowedTools: [...currentGroupToolsDeny] } : {}),
       // Custom permission handling - check rules and prompt user for unknown tools
       // Effective when permissionMode is 'default' or 'acceptEdits' (not 'bypassPermissions')
       canUseTool: async (toolName: string, input: unknown, options: { signal: AbortSignal }) => {
@@ -3582,11 +3623,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     };
 
     // sessionId 和 resume 互斥（SDK 约束）
-    // 新 session：传 sessionId 让 SDK 使用我们的 UUID
+    // 新 session：传 effectiveSdkSessionId 让 SDK 使用有效 UUID
     // Resume：传 resume 恢复对话上下文
     const sessionOption = resumeFrom
       ? { resume: resumeFrom, ...(rewindResumeAt ? { resumeSessionAt: rewindResumeAt } : {}) }
-      : { sessionId: sessionId };
+      : { sessionId: effectiveSdkSessionId };
 
     try {
       querySession = query({
@@ -3599,12 +3640,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // rather than synchronously here; this catch covers the sync case if SDK validates early.
       const msg = queryError instanceof Error ? queryError.message : String(queryError);
       if (!resumeFrom && msg.includes('already in use')) {
-        console.warn(`[agent] Session ${sessionId} already exists on disk, switching to resume`);
+        console.warn(`[agent] Session ${effectiveSdkSessionId} already exists on disk, switching to resume`);
         sessionRegistered = true;
         querySession = query({
           prompt: promptGen,
           options: {
-            resume: sessionId,
+            resume: effectiveSdkSessionId,
             ...(rewindResumeAt ? { resumeSessionAt: rewindResumeAt } : {}),
             ...commonQueryOptions,
           },
