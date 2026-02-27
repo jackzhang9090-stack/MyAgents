@@ -15,7 +15,8 @@ import {
   Settings,
   Trash2,
   Upload,
-  PanelRightClose
+  PanelRightClose,
+  ExternalLink
 } from 'lucide-react';
 import { forwardRef, lazy, memo, Suspense, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Tree } from 'react-arborist';
@@ -675,6 +676,14 @@ const DirectoryPanel = memo(forwardRef<DirectoryPanelHandle, DirectoryPanelProps
     }
   };
 
+  const handleOpenWithDefault = async (path: string) => {
+    try {
+      await apiPost('/agent/open-with-default', { path });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to open');
+    }
+  };
+
   const handleRename = async (oldPath: string, newName: string) => {
     try {
       await apiPost('/agent/rename', { oldPath, newName });
@@ -913,6 +922,11 @@ const DirectoryPanel = memo(forwardRef<DirectoryPanelHandle, DirectoryPanelProps
           label: '引用',
           icon: <AtSign className="h-4 w-4" />,
           onClick: () => onInsertReference?.([node.path])
+        },
+        {
+          label: '打开',
+          icon: <ExternalLink className="h-4 w-4" />,
+          onClick: () => handleOpenWithDefault(node.path)
         },
         {
           label: '打开所在文件夹',

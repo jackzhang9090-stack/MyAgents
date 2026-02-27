@@ -2040,6 +2040,48 @@ async function main() {
         }
       }
 
+      // Open file with system default application
+      if (pathname === '/agent/open-with-default' && request.method === 'POST') {
+        try {
+          const payload = await request.json() as { path?: string; agentDir?: string };
+          const targetPath = payload?.path?.trim();
+
+          if (!targetPath) {
+            return jsonResponse({ success: false, error: 'path is required.' }, 400);
+          }
+
+          const effectiveAgentDir = payload?.agentDir || currentAgentDir;
+          const resolved = resolveAgentPath(effectiveAgentDir, targetPath);
+          if (!resolved) {
+            return jsonResponse({ success: false, error: 'Invalid path.' }, 400);
+          }
+
+          if (!existsSync(resolved)) {
+            return jsonResponse({ success: false, error: 'File not found.' }, 404);
+          }
+
+          const isMac = process.platform === 'darwin';
+          const isWin = process.platform === 'win32';
+
+          if (isMac) {
+            Bun.spawn(['open', resolved]);
+          } else if (isWin) {
+            // Use PowerShell Start-Process to avoid cmd /c shell interpretation
+            // which could treat & | > in filenames as command operators
+            Bun.spawn(['powershell', '-NoProfile', '-Command', `Start-Process -FilePath '${resolved.replace(/'/g, "''")}'`]);
+          } else {
+            Bun.spawn(['xdg-open', resolved]);
+          }
+
+          return jsonResponse({ success: true });
+        } catch (error) {
+          return jsonResponse(
+            { success: false, error: error instanceof Error ? error.message : 'Failed to open' },
+            500
+          );
+        }
+      }
+
       // Open absolute path in Finder/Explorer (for user-level skills/commands)
       if (pathname === '/agent/open-path' && request.method === 'POST') {
         try {
