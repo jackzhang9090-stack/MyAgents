@@ -1,7 +1,7 @@
 import { appendFileSync, copyFileSync, cpSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync, mkdirSync, rmSync, renameSync } from 'fs';
 import { mkdir, rename, rm, stat } from 'fs/promises';
 import { basename, dirname, join, relative, resolve, extname, sep } from 'path';
-import { tmpdir } from 'os';
+import { tmpdir, homedir } from 'os';
 import AdmZip from 'adm-zip';
 import {
   BUILTIN_SLASH_COMMANDS,
@@ -32,7 +32,7 @@ import { setImMediaContext } from './tools/im-media-tool';
 
 // ============= CRASH DIAGNOSTICS =============
 // File-based logging to capture crashes before process dies
-const CRASH_LOG = '/tmp/myagents-crash.log';
+const CRASH_LOG = join(tmpdir(), 'myagents-crash.log');
 
 function crashLog(prefix: string, ...args: unknown[]) {
   try {
@@ -870,12 +870,35 @@ function buildCronEventPrompt(
   return prompt;
 }
 
+/**
+ * Write a startup beacon directly to unified log file (bypasses initLogger).
+ * This is critical for diagnosing Windows startup hangs where initLogger
+ * may not be reached yet and zero BUN logs appear.
+ */
+function startupBeacon(step: string): void {
+  try {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    const filePath = join(homedir(), '.myagents', 'logs', `unified-${y}-${m}-${d}.log`);
+    const ts = now.toISOString();
+    appendFileSync(filePath, `${ts} [BUN  ] [INFO ] [startup] ${step}\n`);
+  } catch { /* ignore — logs dir may not exist yet */ }
+}
+
 async function main() {
+  startupBeacon(`main() entered, pid=${process.pid}, platform=${process.platform}, argv=${process.argv.length} args`);
+
   const { agentDir, initialPrompt, port, sessionId: initialSessionId } = parseArgs(process.argv);
+  startupBeacon(`args parsed, port=${port}, agentDir=${agentDir.slice(-40)}`);
+
   let currentAgentDir = await ensureAgentDir(agentDir);
+  startupBeacon('ensureAgentDir done');
 
   // Initialize unified logging system (intercepts console.log and sends to SSE)
   initLogger(getClients);
+  startupBeacon('initLogger done — switching to console.log');
 
   // Clean up old logs (30+ days)
   cleanupOldLogs();        // Agent session logs
@@ -883,11 +906,14 @@ async function main() {
 
   // Seed bundled skills to ~/.myagents/skills/ on first launch
   seedBundledSkills();
+  console.log('[startup] seedBundledSkills done');
 
   // Generate agent-browser CLI wrapper in ~/.myagents/bin/
   setupAgentBrowserWrapper();
+  console.log('[startup] setupAgentBrowserWrapper done');
 
   await initializeAgent(currentAgentDir, initialPrompt, initialSessionId);
+  console.log('[startup] initializeAgent done');
 
   // Store sidecar port for OpenAI bridge loopback
   setSidecarPort(port);
@@ -902,6 +928,8 @@ async function main() {
     maxOutputTokens: 8192,
     logger: (msg) => console.log(msg),
   });
+
+  console.log(`[startup] Bun.serve() binding to 127.0.0.1:${port}...`);
 
   Bun.serve({
     port,

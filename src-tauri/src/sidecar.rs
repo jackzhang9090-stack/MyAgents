@@ -1465,39 +1465,48 @@ pub fn start_tab_sidecar<R: Runtime>(
             Ok(port)
         }
         Err(e) => {
-            // Health check failed - try to get process output for debugging
+            // Health check failed — collect diagnostics into error message
+            // so it surfaces in the unified log (via logger::error in commands.rs)
             log::error!("[sidecar] Health check failed: {}", e);
-            
-            // Try to get the instance and check if process is still running
+            let mut diag = e.clone();
+
             let mut manager_guard = manager.lock().map_err(|_| e.clone())?;
             if let Some(instance) = manager_guard.get_instance_mut(tab_id) {
-                // Check if process has exited
                 match instance.process.try_wait() {
                     Ok(Some(status)) => {
-                        log::error!("[sidecar] Process exited with status: {:?}", status);
+                        let detail = format!(" | process exited: {:?}", status);
+                        log::error!("[sidecar]{}", detail);
+                        diag.push_str(&detail);
                     }
                     Ok(None) => {
-                        log::error!("[sidecar] Process still running but not healthy");
+                        let detail = " | process alive but not listening";
+                        log::error!("[sidecar]{}", detail);
+                        diag.push_str(detail);
                     }
                     Err(wait_err) => {
-                        log::error!("[sidecar] Failed to check process status: {}", wait_err);
+                        let detail = format!(" | try_wait error: {}", wait_err);
+                        log::error!("[sidecar]{}", detail);
+                        diag.push_str(&detail);
                     }
                 }
-                
-                // Try to read stderr if available
+
+                // stderr is captured by a background thread, but try to grab any remaining
                 if let Some(ref mut stderr) = instance.process.stderr.take() {
                     use std::io::Read;
                     let mut output = String::new();
                     if stderr.read_to_string(&mut output).is_ok() && !output.is_empty() {
-                        log::error!("[sidecar] Process stderr: {}", output);
+                        let truncated = if output.len() > 500 { &output[..500] } else { &output };
+                        let detail = format!(" | stderr: {}", truncated);
+                        log::error!("[sidecar]{}", detail);
+                        diag.push_str(&detail);
                     }
                 }
             }
-            
+
             // Remove the failed instance
             manager_guard.remove_instance(tab_id);
-            
-            Err(e)
+
+            Err(diag)
         }
     }
 }
