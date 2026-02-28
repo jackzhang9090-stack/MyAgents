@@ -122,6 +122,10 @@ export default memo(function AgentCapabilitiesPanel({
     const onSyncSkillToGlobalRef = useRef(onSyncSkillToGlobal);
     useEffect(() => { onSyncSkillToGlobalRef.current = onSyncSkillToGlobal; }, [onSyncSkillToGlobal]);
 
+    // Stabilize globalSkillFolderNames ref (Set changes on every render from parent)
+    const globalSkillFolderNamesRef = useRef(globalSkillFolderNames);
+    useEffect(() => { globalSkillFolderNamesRef.current = globalSkillFolderNames; }, [globalSkillFolderNames]);
+
     // Context menu state
     const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null);
 
@@ -202,7 +206,7 @@ export default memo(function AgentCapabilitiesPanel({
             },
         ];
         // Project skills can be synced to global (hide if already exists globally)
-        if (scope === 'project' && folderName && !globalSkillFolderNames?.has(folderName)) {
+        if (scope === 'project' && folderName && !globalSkillFolderNamesRef.current?.has(folderName)) {
             items.push({
                 label: '同步至全局技能',
                 onClick: () => {

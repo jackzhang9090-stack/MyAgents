@@ -80,9 +80,12 @@ fn ensure_high_file_descriptor_limit() {
 
 // Configuration constants
 const BASE_PORT: u16 = 31415;
-// Health check: 60 attempts × 100ms = 6 seconds total (optimized for faster startup)
-const HEALTH_CHECK_MAX_ATTEMPTS: u32 = 60;
-const HEALTH_CHECK_DELAY_MS: u64 = 100;
+// Health check: 600 attempts × 500ms ≈ 5 min upper bound.
+// In practice localhost TCP fails instantly (~1ms), so real wall-time ≈ 600 × 500ms = 5 min.
+// The generous limit accommodates Windows Defender first-run scanning of bun.exe,
+// which can hold the process for 20-30s before any code executes.
+const HEALTH_CHECK_MAX_ATTEMPTS: u32 = 600;
+const HEALTH_CHECK_DELAY_MS: u64 = 500;
 const HEALTH_CHECK_TIMEOUT_MS: u64 = 100;
 // HTTP health check for existing sidecar - shorter timeout since sidecar should respond immediately
 const HTTP_HEALTH_CHECK_TIMEOUT_MS: u64 = 500;

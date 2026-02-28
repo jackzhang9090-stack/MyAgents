@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, useRef, memo } from 'react';
 import { arrayMove } from '@dnd-kit/sortable';
 
 import { initAnalytics, track } from '@/analytics';
-import { stopTabSidecar, startGlobalSidecar, stopAllSidecars, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, resetGlobalSidecarReadyPromise, getSessionActivation, updateSessionTab, ensureSessionSidecar, releaseSessionSidecar, activateSession, deactivateSession, upgradeSessionId, getSessionPort, stopSseProxy, startBackgroundCompletion, cancelBackgroundCompletion, sessionHasPersistentOwners } from '@/api/tauriClient';
+import { stopTabSidecar, startGlobalSidecar, stopAllSidecars, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, getSessionActivation, updateSessionTab, ensureSessionSidecar, releaseSessionSidecar, activateSession, deactivateSession, upgradeSessionId, getSessionPort, stopSseProxy, startBackgroundCompletion, cancelBackgroundCompletion, sessionHasPersistentOwners } from '@/api/tauriClient';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import CustomTitleBar from '@/components/CustomTitleBar';
 import TabBar from '@/components/TabBar';
@@ -193,11 +193,11 @@ export default function App() {
     const BASE_DELAY = 2000; // 2 seconds
 
     try {
-      // Reset and reinitialize the ready promise for retry
-      if (retryCountRef.current > 0) {
-        resetGlobalSidecarReadyPromise();
-        initGlobalSidecarReadyPromise();
-      }
+      // NOTE: Do NOT reset the ready promise on retry.
+      // Existing waiters (useTaskCenterData etc.) hold a reference to the original promise.
+      // Resetting it would orphan those waiters — they'd wait for a dead promise until
+      // the 60s timeout expires, even if the sidecar is already running.
+      // Keep the original promise; markGlobalSidecarReady() resolves it for ALL waiters.
 
       await startGlobalSidecar();
 
