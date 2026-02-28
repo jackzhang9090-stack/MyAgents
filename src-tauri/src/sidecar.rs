@@ -883,13 +883,20 @@ fn kill_process(child: &mut Child) -> std::io::Result<()> {
     // This ensures we don't block the caller (important for UI responsiveness)
     // The thread will force kill if the process doesn't exit within timeout
     std::thread::spawn(move || {
-        let timeout = Duration::from_secs(GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
-        let start = std::time::Instant::now();
+        #[cfg(windows)]
+        {
+            // taskkill /T /F already synchronously terminated the process tree,
+            // no need for background polling on Windows
+            let _ = pid; // suppress unused variable
+            return;
+        }
 
-        loop {
-            // Check if process has exited
-            #[cfg(unix)]
-            {
+        #[cfg(unix)]
+        {
+            let timeout = Duration::from_secs(GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
+            let start = std::time::Instant::now();
+
+            loop {
                 // Use waitpid with WNOHANG to check without blocking
                 let mut status: i32 = 0;
                 let result = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
@@ -906,26 +913,15 @@ fn kill_process(child: &mut Child) -> std::io::Result<()> {
                     return;
                 }
                 // result == 0 means process still running
-            }
-            #[cfg(windows)]
-            {
-                // taskkill /T /F already synchronously terminated the process tree,
-                // no need for background polling on Windows
-                return;
-            }
 
-            if start.elapsed() > timeout {
-                log::warn!("[sidecar] Process {} didn't exit after SIGTERM, force killing process group", pid);
-                #[cfg(unix)]
-                {
-                    unsafe {
-                        libc::kill(-(pid as i32), libc::SIGKILL);
-                    }
+                if start.elapsed() > timeout {
+                    log::warn!("[sidecar] Process {} didn't exit after SIGTERM, force killing process group", pid);
+                    unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
+                    return;
                 }
-                return;
-            }
 
-            thread::sleep(Duration::from_millis(50));
+                thread::sleep(Duration::from_millis(50));
+            }
         }
     });
 
