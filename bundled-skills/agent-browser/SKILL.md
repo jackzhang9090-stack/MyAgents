@@ -469,19 +469,22 @@ agent-browser eval -b "$(echo -n 'Array.from(document.querySelectorAll("a")).map
 - Nested quotes, arrow functions, template literals, or multiline -> use `eval --stdin <<'EVALEOF'`
 - Programmatic/generated scripts -> use `eval -b` with base64
 
-## Configuration File
+## Anti-Detection & Configuration
 
-Create `agent-browser.json` in the project root for persistent settings:
+Anti-detection defaults are pre-configured in `~/.agent-browser/config.json` — headed mode, hidden `navigator.webdriver`, realistic window size/UA, persistent browser profile. No extra flags needed for normal use.
 
-```json
-{
-  "headed": true,
-  "proxy": "http://localhost:8080",
-  "profile": "./browser-data"
-}
+**Persistent login:** The browser profile at `~/.playwright-mcp-profile/` persists cookies/localStorage across sessions. If a site requires login, guide the user to log in once in the headed browser window — subsequent runs will reuse the authenticated session automatically.
+
+**If a site still blocks:** override per-command with CLI flags (temporary), or edit the config file (persistent). CLI flags always override the config file.
+
+```bash
+# Temporary: override UA for one command
+agent-browser --user-agent "custom UA" open https://target.com
 ```
 
-Priority (lowest to highest): `~/.agent-browser/config.json` < `./agent-browser.json` < env vars < CLI flags. Use `--config <path>` or `AGENT_BROWSER_CONFIG` env var for a custom config file (exits with error if missing/invalid). All CLI options map to camelCase keys (e.g., `--executable-path` -> `"executablePath"`). Boolean flags accept `true`/`false` values (e.g., `--headed false` overrides config). Extensions from user and project configs are merged, not replaced.
+**Persistent config edits:** edit `~/.agent-browser/config.json`. **IMPORTANT:** This file is auto-managed by MyAgents — it regenerates on every app startup when `"_managed_by": "myagents"` is present. To make persistent edits that survive restarts, you **must** first delete the `"_managed_by"` field, then save your changes. `args` field is split by **both comma and newline** — avoid args containing commas (e.g. `--window-size=W,H` will be split incorrectly; use `--start-maximized` instead). All CLI flags map to camelCase keys (`--executable-path` → `executablePath`).
+
+Config priority (lowest → highest): `~/.agent-browser/config.json` < `./agent-browser.json` < env vars < CLI flags.
 
 ## Deep-Dive Documentation
 

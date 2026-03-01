@@ -4,8 +4,7 @@ import { join, resolve, sep } from 'path';
 import { createRequire } from 'module';
 import { query, type Query, type SDKUserMessage, type AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { getScriptDir, getBundledBunDir, getAgentBrowserCliPath } from './utils/runtime';
-import { getCrossPlatformEnv } from './utils/platform';
-import { getAgentBrowserConfigPath } from './utils/browser-stealth';
+import { getCrossPlatformEnv, isSkillBlockedOnPlatform } from './utils/platform';
 import { resizeImageIfNeeded } from './utils/imageResize';
 import { cronToolsServer, getCronTaskContext, clearCronTaskContext } from './tools/cron-tools';
 import { imCronToolServer, getImCronContext } from './tools/im-cron-tool';
@@ -100,6 +99,7 @@ export function syncProjectUserConfig(projectDir: string): void {
     for (const entry of readdirSync(userSkillsDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       if (entry.name.startsWith('.')) continue;
+      if (isSkillBlockedOnPlatform(entry.name)) continue;
 
       managedSkillNames.add(entry.name);
       const linkPath = join(projectSkillsDir, entry.name);
@@ -962,18 +962,32 @@ function buildSdkMcpServers(): Record<string, SdkMcpServerConfig | typeof cronTo
       // Log full command for debugging
       console.log(`[agent] MCP ${server.id}: ${command} ${args.join(' ')}`);
 
-      // Build MCP config - follow Claude Code's approach:
-      // Don't pass explicit env vars, let child process inherit naturally
-      // This avoids issues with proxy env vars affecting WebSocket connections
+      // Build MCP config with isolated env to prevent proxy interference.
+      // The parent Sidecar may have HTTP_PROXY set (injected by Rust at spawn),
+      // which leaks into MCP child processes and breaks localhost WebSocket connections
+      // (e.g., playwright-core's ws transport to Chrome DevTools gets routed through proxy).
+      const mcpEnv: Record<string, string> = {};
+
+      // Copy user-defined env vars for this server
+      if (server.env && Object.keys(server.env).length > 0) {
+        Object.assign(mcpEnv, server.env);
+      }
+
+      // Strip proxy env vars from MCP subprocess
+      for (const proxyVar of [
+        'http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY',
+        'ALL_PROXY', 'all_proxy',
+      ]) {
+        if (!(proxyVar in mcpEnv)) {
+          mcpEnv[proxyVar] = '';
+        }
+      }
+
       const mcpConfig: SdkMcpServerConfig = {
         command,
         args,
+        env: mcpEnv,  // Always set: proxy vars are stripped above
       };
-
-      // Only add env if server has custom env vars defined
-      if (server.env && Object.keys(server.env).length > 0) {
-        mcpConfig.env = server.env;
-      }
 
       result[server.id] = mcpConfig;
     } else if ((server.type === 'sse' || server.type === 'http') && server.url) {
@@ -1709,7 +1723,9 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): NodeJS.Process
     essentialPaths.push(bundledBunDir);
   }
 
-  // MyAgents bin directory (agent-browser wrapper etc.)
+  // MyAgents bin directory — user-facing commands (agent-browser wrapper etc.)
+  // Safe for global PATH: runtime shims (node→bun) are in ~/.myagents/shims/
+  // and scoped inside each wrapper script, not exposed here.
   if (home) {
     const myagentsBinDir = isWindows
       ? resolve(home, '.myagents', 'bin')
@@ -1774,11 +1790,7 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): NodeJS.Process
     // into project .claude/skills/ by syncProjectUserConfig() instead.
   };
 
-  // agent-browser: point to MyAgents-managed stealth config (headed + anti-detection)
-  const abConfigPath = getAgentBrowserConfigPath();
-  if (abConfigPath && !env.AGENT_BROWSER_CONFIG) {
-    env.AGENT_BROWSER_CONFIG = abConfigPath;
-  }
+  // agent-browser: config is at ~/.agent-browser/config.json (default path, no env var needed)
 
   // agent-browser: bypass Rust canonicalize() UNC path issue on Windows
   // https://github.com/vercel-labs/agent-browser/issues/393

@@ -9,12 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.31] - 2026-03-01
 
+### Fixed
+- **agent-browser 反检测配置路径统一**：使用 `~/.agent-browser/config.json`（agent-browser 默认路径），移除 `AGENT_BROWSER_CONFIG` 环境变量，避免路径不一致
+- **agent-browser Profile 路径统一**：与 Playwright MCP 共享 `~/.playwright-mcp-profile/`，避免重复登录
+- **agent-browser comma-in-args bug**：`--window-size=1440,900` 被 Rust CLI 按逗号拆分导致参数错误，改用 `--start-maximized`
+- **Windows agent-browser 不可用**：上游 daemon 在 Windows 使用 Unix socket 导致连接失败（vercel-labs/agent-browser#398），暂时在 Windows 上跳过 agent-browser 技能加载
+- **agent-browser 反检测参数优化**：禁用自动化控制标志、匹配系统 locale、最大化窗口绕过 viewport 指纹
+
 ### Changed
 - **统一系统提示词架构**：重构为三层 Prompt 架构（L1 基础身份 + L2 交互方式 + L3 场景指令），所有场景统一使用 append 模式
   - AI 始终知道自己运行在 MyAgents 产品中（桌面聊天、IM Bot、Cron 任务）
   - 旧 SystemPromptConfig（preset/replace/append 三模式）替换为 InteractionScenario 类型
   - IM Bot 启动时传递 botName，AI 感知自身 Bot 名称
   - 模板内容内联为字符串常量（bun build 禁止 `__dirname`）
+- **平台技能屏蔽机制**：新增 `PLATFORM_BLOCKED_SKILLS` 集中配置，支持按平台跳过不可用的内置技能（seed / wrapper / symlink / API 列表统一过滤）
+- **发布脚本集成 GitHub Release 上传**：`publish_release.sh` 和 `publish_windows.ps1` 在 R2 上传后自动将构建产物上传到 GitHub Release
 
 ---
 
