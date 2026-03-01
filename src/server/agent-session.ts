@@ -1010,17 +1010,60 @@ function buildSdkMcpServers(): Record<string, SdkMcpServerConfig | typeof cronTo
       // Log full command for debugging
       console.log(`[agent] MCP ${server.id}: ${command} ${args.join(' ')}`);
 
-      // Build MCP config - follow Claude Code's approach:
-      // Don't pass explicit env vars, let child process inherit naturally
-      // This avoids issues with proxy env vars affecting WebSocket connections
+      // Build MCP config with isolated env to prevent cross-module interference.
+      // MCP subprocess inherits parent env, but we need to:
+      // 1. Strip proxy env vars — prevents HTTP_PROXY from breaking WebSocket connections
+      //    (e.g., playwright-core's ws transport to Chrome DevTools gets routed through proxy)
+      // 2. Add ~/.myagents/bin to PATH ONLY for agent-browser (not globally)
+      //    — the `node → bun` shim in that dir breaks other MCP tools like Playwright MCP
+      const mcpEnv: Record<string, string> = {};
+
+      // Copy user-defined env vars for this server
+      if (server.env && Object.keys(server.env).length > 0) {
+        Object.assign(mcpEnv, server.env);
+      }
+
+      // Strip proxy env vars from MCP subprocess to prevent interference.
+      // The parent Sidecar may have HTTP_PROXY set (injected by Rust at spawn),
+      // which leaks into MCP child processes and can break localhost WebSocket connections
+      // (Bun's http layer may route ws://127.0.0.1 through proxy despite NO_PROXY).
+      for (const proxyVar of [
+        'http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY',
+        'ALL_PROXY', 'all_proxy',
+      ]) {
+        if (!(proxyVar in mcpEnv)) {
+          mcpEnv[proxyVar] = '';
+        }
+      }
+
+      // agent-browser only: add ~/.myagents/bin to PATH for its wrapper script.
+      // This directory contains a `node → bun` shim that would break other MCP tools
+      // (specifically playwright-core's WebSocket transport), so it must NOT be global.
+      if (server.id === 'agent-browser') {
+        const { home: envHome } = getCrossPlatformEnv();
+        if (envHome) {
+          const isWin = process.platform === 'win32';
+          const myagentsBinDir = isWin
+            ? resolve(envHome, '.myagents', 'bin')
+            : `${envHome}/.myagents/bin`;
+          const pathSep = isWin ? ';' : ':';
+          const pathKey = isWin ? 'Path' : 'PATH';
+          const currentPath = process.env[pathKey] || '';
+          if (!currentPath.includes(myagentsBinDir)) {
+            mcpEnv[pathKey] = `${myagentsBinDir}${pathSep}${currentPath}`;
+            console.log(`[agent] MCP ${server.id}: Added ${myagentsBinDir} to PATH (scoped)`);
+          }
+        }
+      }
+
       const mcpConfig: SdkMcpServerConfig = {
         command,
         args,
       };
 
-      // Only add env if server has custom env vars defined
-      if (server.env && Object.keys(server.env).length > 0) {
-        mcpConfig.env = server.env;
+      // Only set env if we have any overrides
+      if (Object.keys(mcpEnv).length > 0) {
+        mcpConfig.env = mcpEnv;
       }
 
       result[server.id] = mcpConfig;
@@ -1757,13 +1800,10 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): NodeJS.Process
     essentialPaths.push(bundledBunDir);
   }
 
-  // MyAgents bin directory (agent-browser wrapper etc.)
-  if (home) {
-    const myagentsBinDir = isWindows
-      ? resolve(home, '.myagents', 'bin')
-      : `${home}/.myagents/bin`;
-    essentialPaths.push(myagentsBinDir);
-  }
+  // NOTE: ~/.myagents/bin is NOT added to global PATH here.
+  // It contains a `node → bun` shim that breaks playwright-core's WebSocket transport
+  // when inherited by Playwright MCP (and potentially other MCP servers).
+  // Instead, ~/.myagents/bin is added ONLY to agent-browser's MCP env in buildSdkMcpServers().
 
   // System bun/runtime installations (fallback)
   if (isWindows) {

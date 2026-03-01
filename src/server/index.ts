@@ -1,4 +1,4 @@
-import { appendFileSync, copyFileSync, cpSync, existsSync, linkSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync, mkdirSync, rmSync, renameSync } from 'fs';
+import { appendFileSync, copyFileSync, cpSync, existsSync, linkSync, readlinkSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync, mkdirSync, rmSync, renameSync } from 'fs';
 import { mkdir, rename, rm, stat } from 'fs/promises';
 import { basename, dirname, join, relative, resolve, extname, sep } from 'path';
 import { tmpdir, homedir } from 'os';
@@ -416,6 +416,67 @@ function seedBundledSkills(): void {
  * The wrapper delegates to `{bun} {agent-browser.js}`.
  */
 const AGENT_BROWSER_VERSION = '0.15.1';
+
+/**
+ * Clean up stale Playwright MCP profile artifacts left by v0.1.30.
+ *
+ * v0.1.30 had a bug where ~/.myagents/bin (containing a node→bun shim) was added to
+ * global PATH, breaking playwright-core's WebSocket transport. This caused Chrome to
+ * launch but hang on the CDP connection, eventually timing out and leaving stale
+ * SingletonLock/SingletonSocket files in the profile directory.
+ *
+ * This cleanup runs once at startup to recover from that state.
+ */
+function cleanupStalePlaywrightProfile(): void {
+  try {
+    const homeDir = getHomeDirOrNull();
+    if (!homeDir) return;
+
+    const profileDir = join(homeDir, '.playwright-mcp-profile');
+    const lockPath = join(profileDir, 'SingletonLock');
+
+    if (!existsSync(lockPath)) return;
+
+    // SingletonLock is a symlink: "hostname-pid". Check if the pid is still running.
+    let linkTarget: string;
+    try {
+      linkTarget = readlinkSync(lockPath);
+    } catch {
+      return; // Can't read lock symlink, skip cleanup
+    }
+
+    // Format: "hostname-pid" (e.g., "Ethan.local-82424")
+    const pidMatch = linkTarget.match(/-(\d+)$/);
+    if (!pidMatch) return;
+
+    const pid = parseInt(pidMatch[1], 10);
+
+    // Check if the process is still alive
+    try {
+      process.kill(pid, 0); // Signal 0 = just check if process exists
+      // Process is alive — don't remove the lock
+      return;
+    } catch {
+      // Process is dead — safe to clean up
+    }
+
+    // Remove stale lock files
+    const staleFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+    for (const file of staleFiles) {
+      const filePath = join(profileDir, file);
+      try {
+        if (existsSync(filePath)) {
+          unlinkSync(filePath);
+        }
+      } catch { /* ignore cleanup errors */ }
+    }
+
+    console.log(`[startup] Cleaned up stale Playwright MCP profile lock (pid ${pid} no longer running)`);
+  } catch (err) {
+    // Non-critical — don't block startup
+    console.warn('[startup] Playwright profile cleanup failed:', err);
+  }
+}
 
 /**
  * Write the agent-browser wrapper script to ~/.myagents/bin/.
@@ -942,6 +1003,10 @@ async function main() {
   // Clean up old logs (30+ days)
   cleanupOldLogs();        // Agent session logs
   cleanupOldUnifiedLogs(); // Unified console logs
+
+  // Recovery: clean up stale Playwright MCP profile locks left by v0.1.30 bug
+  // (node→bun shim in global PATH caused Chrome CDP WebSocket timeout)
+  cleanupStalePlaywrightProfile();
 
   // Seed bundled skills to ~/.myagents/skills/ on first launch
   seedBundledSkills();
