@@ -2076,6 +2076,24 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                                     </button>
                                 </div>
                             </div>
+
+                            {/* Bug Report */}
+                            <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <h3 className="text-base font-medium text-[var(--ink)]">报告问题</h3>
+                                        <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                                            AI 将分析本地日志，生成结构化诊断报告并上报
+                                        </p>
+                                    </div>
+                                    <button
+                                        onClick={() => setShowBugReport(true)}
+                                        className="rounded-lg bg-[var(--paper-inset)] px-3 py-1.5 text-xs font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-strong)]"
+                                    >
+                                        报告问题
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     )}
 
@@ -2208,24 +2226,6 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                                             myagents.io@gmail.com
                                         </ExternalLink>
                                     </div>
-                                </div>
-                            </div>
-
-                            {/* Bug Report */}
-                            <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
-                                <div className="flex items-center justify-between">
-                                    <div>
-                                        <h3 className="text-sm font-medium text-[var(--ink)]">报告问题</h3>
-                                        <p className="mt-1 text-xs text-[var(--ink-muted)]">
-                                            AI 将分析本地日志，生成结构化诊断报告并上报
-                                        </p>
-                                    </div>
-                                    <button
-                                        onClick={() => setShowBugReport(true)}
-                                        className="rounded-lg bg-[var(--paper-inset)] px-3 py-1.5 text-xs font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-strong)]"
-                                    >
-                                        报告问题
-                                    </button>
                                 </div>
                             </div>
 
