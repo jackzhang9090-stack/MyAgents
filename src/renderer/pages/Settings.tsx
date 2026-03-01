@@ -3404,6 +3404,9 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                 <BugReportOverlay
                     onClose={() => setShowBugReport(false)}
                     appVersion={appVersion}
+                    providers={providers}
+                    apiKeys={apiKeys}
+                    providerVerifyStatus={providerVerifyStatus}
                 />
             )}
         </div>

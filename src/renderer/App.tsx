@@ -30,27 +30,15 @@ import { ensureSelfAwarenessWorkspace } from '@/config/configService';
 // Bug Report Prompt Builder
 // ============================================================
 
-function buildBugReportPrompt(
-  description: string,
-  submitMode: 'github' | 'anonymous',
-  appVersion: string,
-): string {
-  const submitInstruction = submitMode === 'github'
-    ? '分析完成后，请使用 `gh issue create` 命令将报告提交到 hAcKlyc/MyAgents 仓库，标签设为 bug,user-report。'
-    : '分析完成后，请将完整报告以 Markdown 格式输出，方便用户复制提交。';
+function buildBugReportPrompt(description: string, appVersion: string): string {
   return [
-    `## 问题诊断任务`,
+    `## 用户反馈`,
     ``,
     `**App 版本**: ${appVersion}`,
     ``,
-    `### 用户描述`,
     `> ${description}`,
     ``,
-    `### 请按照 CLAUDE.md 指引执行`,
-    `1. 搜索今天的统一日志（./logs/unified-*.log），定位相关错误和警告`,
-    `2. 读取 config.json 了解环境配置（报告中脱敏 API Key）`,
-    `3. 综合分析，生成结构化诊断报告（环境 + 日志分析 + 疑似原因）`,
-    `4. ${submitInstruction}`,
+    `请使用 /report_issue skill 诊断此问题并生成报告。`,
   ].join('\n');
 }
 
@@ -1286,14 +1274,19 @@ export default function App() {
   useEffect(() => {
     const handleLaunchBugReport = async (event: CustomEvent<{
       description: string;
-      submitMode: 'github' | 'anonymous';
+      providerId?: string;
+      model?: string;
       appVersion: string;
     }>) => {
-      const { description, submitMode, appVersion } = event.detail;
+      const { description, appVersion } = event.detail;
       try {
         // --- Pre-checks (before any Tab mutation) ---
 
-        const provider = appProvidersRef.current[0];
+        // Prefer the provider chosen in the overlay, fallback to first available
+        const providerId = event.detail.providerId;
+        const provider = providerId
+          ? appProvidersRef.current.find(p => p.id === providerId)
+          : appProvidersRef.current[0];
         if (!provider) {
           console.error('[App] No providers available for bug report');
           return;
@@ -1304,8 +1297,8 @@ export default function App() {
           return;
         }
 
-        // Ensure ~/.myagents registered as internal project + CLAUDE.md exists
-        // Uses ConfigProvider actions so both disk AND React state are updated
+        // Ensure ~/.myagents registered as internal project
+        // (CLAUDE.md + skills are synced at startup via cmd_sync_admin_agent)
         const project = await ensureSelfAwarenessWorkspace(
           configProjectsRef.current,
           configAddProject,
@@ -1319,7 +1312,9 @@ export default function App() {
         // --- All checks passed, safe to create Tab ---
 
         const initialMessage: InitialMessage = {
-          text: buildBugReportPrompt(description, submitMode, appVersion),
+          text: buildBugReportPrompt(description, appVersion),
+          providerId: provider.id,
+          model: event.detail.model,
         };
 
         const newTab = createNewTab();

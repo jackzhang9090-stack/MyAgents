@@ -1,78 +1,123 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { X, Loader2 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { X, ChevronUp, Send } from 'lucide-react';
 
 import { CUSTOM_EVENTS } from '../../shared/constants';
-import { isTauriEnvironment } from '@/utils/browserMock';
-
-interface GhCliStatus {
-    available: boolean;
-    authenticated: boolean;
-    version: string | null;
-}
+import type { Provider, ProviderVerifyStatus } from '@/config/types';
+import { SUBSCRIPTION_PROVIDER_ID } from '@/config/types';
 
 interface BugReportOverlayProps {
     onClose: () => void;
     appVersion: string;
+    providers: Provider[];
+    apiKeys: Record<string, string>;
+    providerVerifyStatus: Record<string, ProviderVerifyStatus>;
 }
 
-type SubmitMode = 'github' | 'anonymous';
+/** Check if a provider is usable for bug report */
+function isProviderAvailable(
+    provider: Provider,
+    apiKeys: Record<string, string>,
+    verifyStatus: Record<string, ProviderVerifyStatus>,
+): boolean {
+    if (provider.type === 'subscription') {
+        const status = verifyStatus[provider.id];
+        return status?.status === 'valid' && !!status.accountEmail;
+    }
+    // api type
+    const hasKey = !!apiKeys[provider.id];
+    const isInvalid = verifyStatus[provider.id]?.status === 'invalid';
+    return hasKey && !isInvalid;
+}
 
-export default function BugReportOverlay({ onClose, appVersion }: BugReportOverlayProps) {
+export default function BugReportOverlay({
+    onClose, appVersion, providers, apiKeys, providerVerifyStatus,
+}: BugReportOverlayProps) {
     const [description, setDescription] = useState('');
-    const [submitMode, setSubmitMode] = useState<SubmitMode>('github');
-    const isTauri = isTauriEnvironment();
-    const [ghStatus, setGhStatus] = useState<GhCliStatus | null>(
-        isTauri ? null : { available: false, authenticated: false, version: null }
-    );
-    const [checking, setChecking] = useState(isTauri);
+    const [showModelMenu, _setShowModelMenu] = useState(false);
+    const showModelMenuRef = useRef(false);
+    const setShowModelMenu = useCallback((v: boolean) => {
+        showModelMenuRef.current = v;
+        _setShowModelMenu(v);
+    }, []);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const menuRef = useRef<HTMLDivElement>(null);
 
-    // Check gh CLI status on mount (Tauri only)
-    useEffect(() => {
-        if (!isTauri) return;
-        invoke<GhCliStatus>('cmd_check_gh_cli')
-            .then(setGhStatus)
-            .catch(() => setGhStatus({ available: false, authenticated: false, version: null }))
-            .finally(() => setChecking(false));
-    }, [isTauri]);
+    // Default selection: first available provider's primaryModel (computed once at mount)
+    const defaultProvider = () => providers.find(p => isProviderAvailable(p, apiKeys, providerVerifyStatus));
+    const [selectedProviderId, setSelectedProviderId] = useState<string>(() => defaultProvider()?.id ?? '');
+    const [selectedModel, setSelectedModel] = useState<string>(() => defaultProvider()?.primaryModel ?? '');
+
+    const selectedProvider = providers.find(p => p.id === selectedProviderId);
+
+    // Get display name for current model
+    const modelDisplayName = useMemo(() => {
+        if (!selectedProvider || !selectedModel) return '未选择模型';
+        const model = selectedProvider.models.find(m => m.model === selectedModel);
+        return model?.modelName || selectedModel;
+    }, [selectedProvider, selectedModel]);
+
+    const hasValidModel = !!selectedProviderId && !!selectedModel;
+    const hasText = description.trim().length > 0;
+    const canSubmit = hasText && hasValidModel;
 
     // Focus textarea on mount
     useEffect(() => {
         textareaRef.current?.focus();
     }, []);
 
-    // Escape to close
+    // Escape to close, click outside menu to close menu
+    const onCloseRef = useRef(onClose);
+    useEffect(() => { onCloseRef.current = onClose; });
+
     useEffect(() => {
         const handleKey = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') onClose();
+            if (e.key === 'Escape') {
+                if (showModelMenuRef.current) {
+                    setShowModelMenu(false);
+                } else {
+                    onCloseRef.current();
+                }
+            }
+        };
+        const handleClick = (e: MouseEvent) => {
+            if (showModelMenuRef.current && menuRef.current && !menuRef.current.contains(e.target as Node)) {
+                setShowModelMenu(false);
+            }
         };
         document.addEventListener('keydown', handleKey);
-        return () => document.removeEventListener('keydown', handleKey);
-    }, [onClose]);
+        document.addEventListener('mousedown', handleClick);
+        return () => {
+            document.removeEventListener('keydown', handleKey);
+            document.removeEventListener('mousedown', handleClick);
+        };
+    }, [setShowModelMenu]);
 
     const handleSubmit = useCallback(() => {
-        if (!description.trim()) return;
+        if (!canSubmit) return;
         window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
-            detail: { description: description.trim(), submitMode, appVersion },
+            detail: {
+                description: description.trim(),
+                providerId: selectedProviderId,
+                model: selectedModel,
+                appVersion,
+            },
         }));
         onClose();
-    }, [description, submitMode, appVersion, onClose]);
+    }, [canSubmit, description, selectedProviderId, selectedModel, appVersion, onClose]);
 
-    const canSubmit = description.trim().length > 0;
+    // Ctrl/Cmd+Enter to submit
+    const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+            e.preventDefault();
+            handleSubmit();
+        }
+    }, [handleSubmit]);
 
-    // gh status display
-    const renderGhStatus = () => {
-        if (checking) {
-            return <span className="flex items-center gap-1 text-[var(--ink-muted)]"><Loader2 className="h-3 w-3 animate-spin" />检测中...</span>;
-        }
-        if (!ghStatus?.available) {
-            return <span className="text-[var(--error)]">✕ 未安装 gh CLI</span>;
-        }
-        if (!ghStatus.authenticated) {
-            return <span className="text-[var(--warning)]">⚠ gh 未认证（请先运行 gh auth login）</span>;
-        }
-        return <span className="text-[var(--success)]">✓ 已安装且已认证</span>;
+    const isMac = navigator.platform.toLowerCase().includes('mac');
+    const getSubmitTitle = () => {
+        if (!hasText) return '请输入问题描述';
+        if (!hasValidModel) return '请先在设置中配置模型';
+        return isMac ? '发送 (⌘Enter)' : '发送 (Ctrl+Enter)';
     };
 
     return (
@@ -92,87 +137,98 @@ export default function BugReportOverlay({ onClose, appVersion }: BugReportOverl
                     </button>
                 </div>
 
-                {/* Body */}
-                <div className="space-y-4 px-5 py-4">
-                    {/* Description */}
-                    <div>
-                        <label className="mb-1.5 block text-[13px] font-medium text-[var(--ink)]">
-                            请描述你遇到的问题
-                        </label>
+                {/* Input area — matches Chat input style */}
+                <div className="px-5 py-4">
+                    <div className="rounded-2xl border border-[var(--line)] bg-[var(--paper-inset)]">
+                        {/* Textarea */}
                         <textarea
                             ref={textareaRef}
                             value={description}
                             onChange={(e) => setDescription(e.target.value)}
-                            placeholder="详细描述问题的表现、触发步骤等..."
-                            className="w-full resize-none rounded-lg border border-[var(--line)] bg-[var(--paper-inset)] px-3 py-2.5 text-[13px] text-[var(--ink)] placeholder:text-[var(--ink-muted)]/50 focus:border-[var(--accent)] focus:outline-none"
+                            onKeyDown={handleKeyDown}
+                            placeholder="描述你遇到的问题..."
+                            className="w-full resize-none border-0 bg-transparent px-4 py-3 text-[13px] text-[var(--ink)] placeholder:text-[var(--ink-muted)]/50 focus:outline-none"
                             rows={5}
                         />
-                    </div>
 
-                    {/* Submit Mode */}
-                    <div>
-                        <label className="mb-2 block text-[13px] font-medium text-[var(--ink)]">
-                            提交方式
-                        </label>
-                        <div className="space-y-2">
-                            {/* GitHub Issue option */}
-                            <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-[var(--line)] p-3 transition-colors hover:bg-[var(--paper-contrast)]">
-                                <input
-                                    type="radio"
-                                    name="submitMode"
-                                    value="github"
-                                    checked={submitMode === 'github'}
-                                    onChange={() => setSubmitMode('github')}
-                                    className="mt-0.5 accent-[var(--accent)]"
-                                />
-                                <div className="flex-1">
-                                    <div className="text-[13px] font-medium text-[var(--ink)]">
-                                        GitHub Issue
-                                        <span className="ml-1.5 text-[11px] font-normal text-[var(--ink-muted)]">（需安装 gh CLI）</span>
-                                    </div>
-                                    <div className="mt-1 text-[11px]">
-                                        {renderGhStatus()}
-                                    </div>
-                                </div>
-                            </label>
+                        {/* Bottom toolbar */}
+                        <div className="flex items-center justify-between border-t border-[var(--line)] px-3 py-2">
+                            {/* Model selector */}
+                            <div className="relative" ref={menuRef}>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowModelMenu(!showModelMenu)}
+                                    className="flex items-center gap-1 rounded-lg px-2 py-1 text-[12px] text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]"
+                                >
+                                    <span className="max-w-[180px] truncate">{modelDisplayName}</span>
+                                    <ChevronUp className="h-3 w-3" />
+                                </button>
 
-                            {/* Anonymous option (P2) */}
-                            <label className="flex cursor-not-allowed items-start gap-2.5 rounded-lg border border-[var(--line)] p-3 opacity-50">
-                                <input
-                                    type="radio"
-                                    name="submitMode"
-                                    value="anonymous"
-                                    disabled
-                                    className="mt-0.5"
-                                />
-                                <div className="flex-1">
-                                    <div className="text-[13px] font-medium text-[var(--ink-muted)]">
-                                        匿名提交
-                                        <span className="ml-1.5 text-[11px] font-normal">（即将支持）</span>
+                                {/* Model dropdown menu */}
+                                {showModelMenu && (
+                                    <div className="absolute bottom-full left-0 mb-1 max-h-[300px] w-[260px] overflow-y-auto rounded-xl border border-[var(--line)] bg-[var(--paper)] shadow-lg">
+                                        {providers.length === 0 ? (
+                                            <div className="px-3 py-2 text-[12px] text-[var(--ink-muted)]">
+                                                暂无可用模型，请先在设置中配置
+                                            </div>
+                                        ) : (
+                                            providers.map(provider => {
+                                                const available = isProviderAvailable(provider, apiKeys, providerVerifyStatus);
+                                                return (
+                                                    <div key={provider.id}>
+                                                        <div className="px-3 py-1.5 text-[11px] font-medium text-[var(--ink-muted)]">
+                                                            {provider.name}
+                                                            {!available && (
+                                                                <span className="ml-1 text-[var(--ink-muted)]/50">
+                                                                    {provider.id === SUBSCRIPTION_PROVIDER_ID ? '(未验证)' : '(未配置)'}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        {provider.models.map(model => (
+                                                            <button
+                                                                key={model.model}
+                                                                type="button"
+                                                                disabled={!available}
+                                                                onClick={() => {
+                                                                    setSelectedProviderId(provider.id);
+                                                                    setSelectedModel(model.model);
+                                                                    setShowModelMenu(false);
+                                                                }}
+                                                                className={`w-full px-3 py-1.5 text-left text-[12px] transition-colors ${
+                                                                    !available
+                                                                        ? 'cursor-not-allowed text-[var(--ink-muted)]/40'
+                                                                        : selectedProviderId === provider.id && selectedModel === model.model
+                                                                          ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
+                                                                          : 'text-[var(--ink)] hover:bg-[var(--paper-contrast)]'
+                                                                }`}
+                                                            >
+                                                                {model.modelName}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                );
+                                            })
+                                        )}
                                     </div>
-                                </div>
-                            </label>
+                                )}
+                            </div>
+
+                            {/* Send button */}
+                            <button
+                                type="button"
+                                onClick={handleSubmit}
+                                disabled={!canSubmit}
+                                title={getSubmitTitle()}
+                                className={`rounded-lg p-2 transition-colors ${
+                                    canSubmit
+                                        ? 'bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)]'
+                                        : 'bg-[var(--ink-muted)]/15 text-[var(--ink-muted)]/40'
+                                }`}
+                            >
+                                <Send className="h-4 w-4" />
+                            </button>
                         </div>
                     </div>
-                </div>
-
-                {/* Footer */}
-                <div className="flex justify-end gap-2 border-t border-[var(--line)] px-5 py-3">
-                    <button
-                        type="button"
-                        onClick={onClose}
-                        className="rounded-full bg-[var(--button-secondary-bg)] px-4 py-1.5 text-[12px] font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]"
-                    >
-                        取消
-                    </button>
-                    <button
-                        type="button"
-                        onClick={handleSubmit}
-                        disabled={!canSubmit}
-                        className="rounded-full bg-[var(--button-primary-bg)] px-4 py-1.5 text-[12px] font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
-                    >
-                        AI 分析并上报
-                    </button>
                 </div>
             </div>
         </div>
