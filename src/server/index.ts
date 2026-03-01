@@ -481,6 +481,14 @@ function cleanupStalePlaywrightProfile(): void {
 /**
  * Write the agent-browser wrapper script to ~/.myagents/bin/.
  * Returns true on success.
+ *
+ * Architecture: "self-contained wrapper + scoped shims"
+ * - ~/.myagents/bin/       → user-facing commands (safe for global PATH)
+ * - ~/.myagents/shims/     → internal runtime shims (NEVER in global PATH)
+ *
+ * The wrapper script prepends shims/ to its own PATH before exec, so the
+ * `node → bun` shim is only visible to agent-browser's subprocess tree —
+ * it never leaks to Playwright MCP or other tools.
  */
 function writeAgentBrowserWrapper(cliPath: string): boolean {
   const bunPath = getBundledRuntimePath();
@@ -490,34 +498,43 @@ function writeAgentBrowserWrapper(cliPath: string): boolean {
     return false;
   }
   const binDir = join(homeDir, '.myagents', 'bin');
+  const shimsDir = join(homeDir, '.myagents', 'shims');
   if (!existsSync(binDir)) mkdirSync(binDir, { recursive: true });
+  if (!existsSync(shimsDir)) mkdirSync(shimsDir, { recursive: true });
 
   // POSIX sh: escape backslash, double-quote, dollar, backtick inside double-quoted strings
   const shellEscape = (s: string) => s.replace(/([\\"`$])/g, '\\$1');
   const isWin = process.platform === 'win32';
+
+  // --- agent-browser wrapper (self-contained: sets up shims PATH internally) ---
   if (isWin) {
     // Windows needs TWO wrappers (like npm global installs):
     // 1. .cmd for cmd.exe / PowerShell
     // 2. extensionless POSIX sh for Git Bash (SDK uses Git Bash on Windows)
     const safeBun = bunPath.replace(/"/g, '""');
     const safeCli = cliPath.replace(/"/g, '""');
-    writeFileSync(join(binDir, 'agent-browser.cmd'), `@"${safeBun}" "${safeCli}" %*\r\n`);
-    writeFileSync(join(binDir, 'agent-browser'), `#!/bin/sh\nexec "${shellEscape(bunPath)}" "${shellEscape(cliPath)}" "$@"\n`);
+    const safeShims = shimsDir.replace(/"/g, '""');
+    writeFileSync(join(binDir, 'agent-browser.cmd'),
+      `@set "PATH=${safeShims};%PATH%"\r\n@"${safeBun}" "${safeCli}" %*\r\n`);
+    writeFileSync(join(binDir, 'agent-browser'),
+      `#!/bin/sh\nexport PATH="${shellEscape(shimsDir)}:$PATH"\nexec "${shellEscape(bunPath)}" "${shellEscape(cliPath)}" "$@"\n`);
   } else {
-    writeFileSync(join(binDir, 'agent-browser'), `#!/bin/sh\nexec "${shellEscape(bunPath)}" "${shellEscape(cliPath)}" "$@"\n`, { mode: 0o755 });
+    writeFileSync(join(binDir, 'agent-browser'),
+      `#!/bin/sh\nexport PATH="${shellEscape(shimsDir)}:$PATH"\nexec "${shellEscape(bunPath)}" "${shellEscape(cliPath)}" "$@"\n`,
+      { mode: 0o755 });
   }
   console.log(`[agent-browser] Wrapper created: ${join(binDir, 'agent-browser')}${isWin ? ' (.cmd + sh)' : ''}`);
 
+  // --- node shim in ~/.myagents/shims/ (NOT in global PATH) ---
   // agent-browser's Rust binary spawns daemon.js via hardcoded `node` command.
   // Since we bundle bun (not Node.js), create a node shim that delegates to bun.
-  // Always overwrite (no existsSync guard) — bunPath may change after app update,
-  // matching the agent-browser wrapper's unconditional-write behavior above.
-  const nodeShimPath = join(binDir, 'node');
+  // Always overwrite — bunPath may change after app update.
+  const nodeShimPath = join(shimsDir, 'node');
   if (isWin) {
     // Windows: create node.exe as a hardlink to bun.exe.
     // Windows PATH resolves .exe before .cmd (PATHEXT order). Using .exe avoids
     // cmd.exe being invoked for node.cmd, which would create a visible console window.
-    const nodeExePath = join(binDir, 'node.exe');
+    const nodeExePath = join(shimsDir, 'node.exe');
     try {
       if (existsSync(nodeExePath)) unlinkSync(nodeExePath);
       linkSync(bunPath, nodeExePath);
@@ -527,11 +544,23 @@ function writeAgentBrowserWrapper(cliPath: string): boolean {
     }
     // .cmd fallback for cmd.exe / PowerShell manual invocation
     const escapedBun = bunPath.replace(/"/g, '""');
-    writeFileSync(join(binDir, 'node.cmd'), `@"${escapedBun}" %*\r\n`);
+    writeFileSync(join(shimsDir, 'node.cmd'), `@"${escapedBun}" %*\r\n`);
     // POSIX sh fallback for Git Bash
     writeFileSync(nodeShimPath, `#!/bin/sh\nexec "${shellEscape(bunPath)}" "$@"\n`);
   } else {
     writeFileSync(nodeShimPath, `#!/bin/sh\nexec "${shellEscape(bunPath)}" "$@"\n`, { mode: 0o755 });
+  }
+
+  // --- Migration: remove old node shims from ~/.myagents/bin/ (v0.1.30 artifact) ---
+  // v0.1.30 put the node shim in bin/ alongside agent-browser, polluting global PATH.
+  for (const oldShim of ['node', 'node.exe', 'node.cmd']) {
+    const oldPath = join(binDir, oldShim);
+    try {
+      if (existsSync(oldPath)) {
+        unlinkSync(oldPath);
+        console.log(`[agent-browser] Cleaned up old shim: ${oldPath}`);
+      }
+    } catch { /* ignore */ }
   }
 
   return true;
