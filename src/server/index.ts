@@ -1,4 +1,4 @@
-import { appendFileSync, copyFileSync, cpSync, existsSync, linkSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync, mkdirSync, rmSync, renameSync } from 'fs';
+import { appendFileSync, copyFileSync, cpSync, existsSync, linkSync, readlinkSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync, mkdirSync, rmSync, renameSync } from 'fs';
 import { mkdir, rename, rm, stat } from 'fs/promises';
 import { basename, dirname, join, relative, resolve, extname, sep } from 'path';
 import { tmpdir, homedir } from 'os';
@@ -114,7 +114,7 @@ import {
   setProxyConfig,
   type ProviderEnv,
 } from './agent-session';
-import { getHomeDirOrNull } from './utils/platform';
+import { getHomeDirOrNull, isSkillBlockedOnPlatform } from './utils/platform';
 import { getScriptDir, getAgentBrowserCliPath, getBundledRuntimePath, getPackageManagerPath } from './utils/runtime';
 import { ensureBrowserStealthConfig } from './utils/browser-stealth';
 import { buildDirectoryTree, expandDirectory } from './dir-info';
@@ -378,6 +378,10 @@ function seedBundledSkills(): void {
 
     let changed = false;
     for (const folder of bundledFolders) {
+      if (isSkillBlockedOnPlatform(folder)) {
+        console.log(`[seed] Skipping ${folder} on ${process.platform} (platform blocked)`);
+        continue;
+      }
       const dst = join(userSkillsDir, folder);
       // Re-seed if marked as seeded but directory was deleted
       if (config.seeded.includes(folder) && existsSync(dst)) continue;
@@ -418,8 +422,77 @@ function seedBundledSkills(): void {
 const AGENT_BROWSER_VERSION = '0.15.1';
 
 /**
+ * Clean up stale Playwright MCP profile artifacts left by v0.1.30.
+ *
+ * v0.1.30 had a bug where ~/.myagents/bin (containing a node→bun shim) was added to
+ * global PATH, breaking playwright-core's WebSocket transport. This caused Chrome to
+ * launch but hang on the CDP connection, eventually timing out and leaving stale
+ * SingletonLock/SingletonSocket files in the profile directory.
+ *
+ * This cleanup runs once at startup to recover from that state.
+ */
+function cleanupStalePlaywrightProfile(): void {
+  try {
+    const homeDir = getHomeDirOrNull();
+    if (!homeDir) return;
+
+    const profileDir = join(homeDir, '.playwright-mcp-profile');
+    const lockPath = join(profileDir, 'SingletonLock');
+
+    if (!existsSync(lockPath)) return;
+
+    // SingletonLock is a symlink: "hostname-pid". Check if the pid is still running.
+    let linkTarget: string;
+    try {
+      linkTarget = readlinkSync(lockPath);
+    } catch {
+      return; // Can't read lock symlink, skip cleanup
+    }
+
+    // Format: "hostname-pid" (e.g., "Ethan.local-82424")
+    const pidMatch = linkTarget.match(/-(\d+)$/);
+    if (!pidMatch) return;
+
+    const pid = parseInt(pidMatch[1], 10);
+
+    // Check if the process is still alive
+    try {
+      process.kill(pid, 0); // Signal 0 = just check if process exists
+      // Process is alive — don't remove the lock
+      return;
+    } catch {
+      // Process is dead — safe to clean up
+    }
+
+    // Remove stale lock files
+    const staleFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+    for (const file of staleFiles) {
+      const filePath = join(profileDir, file);
+      try {
+        if (existsSync(filePath)) {
+          unlinkSync(filePath);
+        }
+      } catch { /* ignore cleanup errors */ }
+    }
+
+    console.log(`[startup] Cleaned up stale Playwright MCP profile lock (pid ${pid} no longer running)`);
+  } catch (err) {
+    // Non-critical — don't block startup
+    console.warn('[startup] Playwright profile cleanup failed:', err);
+  }
+}
+
+/**
  * Write the agent-browser wrapper script to ~/.myagents/bin/.
  * Returns true on success.
+ *
+ * Architecture: "self-contained wrapper + scoped shims"
+ * - ~/.myagents/bin/       → user-facing commands (safe for global PATH)
+ * - ~/.myagents/shims/     → internal runtime shims (NEVER in global PATH)
+ *
+ * The wrapper script prepends shims/ to its own PATH before exec, so the
+ * `node → bun` shim is only visible to agent-browser's subprocess tree —
+ * it never leaks to Playwright MCP or other tools.
  */
 function writeAgentBrowserWrapper(cliPath: string): boolean {
   const bunPath = getBundledRuntimePath();
@@ -429,34 +502,43 @@ function writeAgentBrowserWrapper(cliPath: string): boolean {
     return false;
   }
   const binDir = join(homeDir, '.myagents', 'bin');
+  const shimsDir = join(homeDir, '.myagents', 'shims');
   if (!existsSync(binDir)) mkdirSync(binDir, { recursive: true });
+  if (!existsSync(shimsDir)) mkdirSync(shimsDir, { recursive: true });
 
   // POSIX sh: escape backslash, double-quote, dollar, backtick inside double-quoted strings
   const shellEscape = (s: string) => s.replace(/([\\"`$])/g, '\\$1');
   const isWin = process.platform === 'win32';
+
+  // --- agent-browser wrapper (self-contained: sets up shims PATH internally) ---
   if (isWin) {
     // Windows needs TWO wrappers (like npm global installs):
     // 1. .cmd for cmd.exe / PowerShell
     // 2. extensionless POSIX sh for Git Bash (SDK uses Git Bash on Windows)
     const safeBun = bunPath.replace(/"/g, '""');
     const safeCli = cliPath.replace(/"/g, '""');
-    writeFileSync(join(binDir, 'agent-browser.cmd'), `@"${safeBun}" "${safeCli}" %*\r\n`);
-    writeFileSync(join(binDir, 'agent-browser'), `#!/bin/sh\nexec "${shellEscape(bunPath)}" "${shellEscape(cliPath)}" "$@"\n`);
+    const safeShims = shimsDir.replace(/"/g, '""');
+    writeFileSync(join(binDir, 'agent-browser.cmd'),
+      `@set "PATH=${safeShims};%PATH%"\r\n@"${safeBun}" "${safeCli}" %*\r\n`);
+    writeFileSync(join(binDir, 'agent-browser'),
+      `#!/bin/sh\nexport PATH="${shellEscape(shimsDir)}:$PATH"\nexec "${shellEscape(bunPath)}" "${shellEscape(cliPath)}" "$@"\n`);
   } else {
-    writeFileSync(join(binDir, 'agent-browser'), `#!/bin/sh\nexec "${shellEscape(bunPath)}" "${shellEscape(cliPath)}" "$@"\n`, { mode: 0o755 });
+    writeFileSync(join(binDir, 'agent-browser'),
+      `#!/bin/sh\nexport PATH="${shellEscape(shimsDir)}:$PATH"\nexec "${shellEscape(bunPath)}" "${shellEscape(cliPath)}" "$@"\n`,
+      { mode: 0o755 });
   }
   console.log(`[agent-browser] Wrapper created: ${join(binDir, 'agent-browser')}${isWin ? ' (.cmd + sh)' : ''}`);
 
+  // --- node shim in ~/.myagents/shims/ (NOT in global PATH) ---
   // agent-browser's Rust binary spawns daemon.js via hardcoded `node` command.
   // Since we bundle bun (not Node.js), create a node shim that delegates to bun.
-  // Always overwrite (no existsSync guard) — bunPath may change after app update,
-  // matching the agent-browser wrapper's unconditional-write behavior above.
-  const nodeShimPath = join(binDir, 'node');
+  // Always overwrite — bunPath may change after app update.
+  const nodeShimPath = join(shimsDir, 'node');
   if (isWin) {
     // Windows: create node.exe as a hardlink to bun.exe.
     // Windows PATH resolves .exe before .cmd (PATHEXT order). Using .exe avoids
     // cmd.exe being invoked for node.cmd, which would create a visible console window.
-    const nodeExePath = join(binDir, 'node.exe');
+    const nodeExePath = join(shimsDir, 'node.exe');
     try {
       if (existsSync(nodeExePath)) unlinkSync(nodeExePath);
       linkSync(bunPath, nodeExePath);
@@ -466,11 +548,23 @@ function writeAgentBrowserWrapper(cliPath: string): boolean {
     }
     // .cmd fallback for cmd.exe / PowerShell manual invocation
     const escapedBun = bunPath.replace(/"/g, '""');
-    writeFileSync(join(binDir, 'node.cmd'), `@"${escapedBun}" %*\r\n`);
+    writeFileSync(join(shimsDir, 'node.cmd'), `@"${escapedBun}" %*\r\n`);
     // POSIX sh fallback for Git Bash
     writeFileSync(nodeShimPath, `#!/bin/sh\nexec "${shellEscape(bunPath)}" "$@"\n`);
   } else {
     writeFileSync(nodeShimPath, `#!/bin/sh\nexec "${shellEscape(bunPath)}" "$@"\n`, { mode: 0o755 });
+  }
+
+  // --- Migration: remove old node shims from ~/.myagents/bin/ (v0.1.30 artifact) ---
+  // v0.1.30 put the node shim in bin/ alongside agent-browser, polluting global PATH.
+  for (const oldShim of ['node', 'node.exe', 'node.cmd']) {
+    const oldPath = join(binDir, oldShim);
+    try {
+      if (existsSync(oldPath)) {
+        unlinkSync(oldPath);
+        console.log(`[agent-browser] Cleaned up old shim: ${oldPath}`);
+      }
+    } catch { /* ignore */ }
   }
 
   return true;
@@ -943,13 +1037,21 @@ async function main() {
   cleanupOldLogs();        // Agent session logs
   cleanupOldUnifiedLogs(); // Unified console logs
 
+  // Recovery: clean up stale Playwright MCP profile locks left by v0.1.30 bug
+  // (node→bun shim in global PATH caused Chrome CDP WebSocket timeout)
+  cleanupStalePlaywrightProfile();
+
   // Seed bundled skills to ~/.myagents/skills/ on first launch
   seedBundledSkills();
   console.log('[startup] seedBundledSkills done');
 
   // Generate agent-browser CLI wrapper in ~/.myagents/bin/
-  setupAgentBrowserWrapper();
-  console.log('[startup] setupAgentBrowserWrapper done');
+  if (!isSkillBlockedOnPlatform('agent-browser')) {
+    setupAgentBrowserWrapper();
+    console.log('[startup] setupAgentBrowserWrapper done');
+  } else {
+    console.log('[startup] Skipping agent-browser on this platform (blocked)');
+  }
 
   await initializeAgent(currentAgentDir, initialPrompt, initialSessionId, { preWarmDisabled: noPreWarm });
   console.log('[startup] initializeAgent done');
@@ -3596,6 +3698,7 @@ async function main() {
               const skillFolders = readdirSync(skillsDir, { withFileTypes: true });
               for (const folder of skillFolders) {
                 if (!folder.isDirectory()) continue;
+                if (isSkillBlockedOnPlatform(folder.name)) continue;
                 // Skip disabled user-level skills in slash commands
                 if (scope === 'user' && skillsConfig.disabled.includes(folder.name)) continue;
                 const skillMdPath = join(skillsDir, folder.name, 'SKILL.md');
@@ -3802,6 +3905,7 @@ async function main() {
               const folders = readdirSync(dir, { withFileTypes: true });
               for (const folder of folders) {
                 if (!folder.isDirectory()) continue;
+                if (isSkillBlockedOnPlatform(folder.name)) continue;
                 const skillMdPath = join(dir, folder.name, 'SKILL.md');
                 if (!existsSync(skillMdPath)) continue;
 
