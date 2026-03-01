@@ -114,7 +114,7 @@ import {
   setProxyConfig,
   type ProviderEnv,
 } from './agent-session';
-import { getHomeDirOrNull } from './utils/platform';
+import { getHomeDirOrNull, isSkillBlockedOnPlatform } from './utils/platform';
 import { getScriptDir, getAgentBrowserCliPath, getBundledRuntimePath, getPackageManagerPath } from './utils/runtime';
 import { ensureBrowserStealthConfig } from './utils/browser-stealth';
 import { buildDirectoryTree, expandDirectory } from './dir-info';
@@ -378,6 +378,10 @@ function seedBundledSkills(): void {
 
     let changed = false;
     for (const folder of bundledFolders) {
+      if (isSkillBlockedOnPlatform(folder)) {
+        console.log(`[seed] Skipping ${folder} on ${process.platform} (platform blocked)`);
+        continue;
+      }
       const dst = join(userSkillsDir, folder);
       // Re-seed if marked as seeded but directory was deleted
       if (config.seeded.includes(folder) && existsSync(dst)) continue;
@@ -1042,8 +1046,12 @@ async function main() {
   console.log('[startup] seedBundledSkills done');
 
   // Generate agent-browser CLI wrapper in ~/.myagents/bin/
-  setupAgentBrowserWrapper();
-  console.log('[startup] setupAgentBrowserWrapper done');
+  if (!isSkillBlockedOnPlatform('agent-browser')) {
+    setupAgentBrowserWrapper();
+    console.log('[startup] setupAgentBrowserWrapper done');
+  } else {
+    console.log('[startup] Skipping agent-browser on this platform (blocked)');
+  }
 
   await initializeAgent(currentAgentDir, initialPrompt, initialSessionId, { preWarmDisabled: noPreWarm });
   console.log('[startup] initializeAgent done');
@@ -3690,6 +3698,7 @@ async function main() {
               const skillFolders = readdirSync(skillsDir, { withFileTypes: true });
               for (const folder of skillFolders) {
                 if (!folder.isDirectory()) continue;
+                if (isSkillBlockedOnPlatform(folder.name)) continue;
                 // Skip disabled user-level skills in slash commands
                 if (scope === 'user' && skillsConfig.disabled.includes(folder.name)) continue;
                 const skillMdPath = join(skillsDir, folder.name, 'SKILL.md');
@@ -3896,6 +3905,7 @@ async function main() {
               const folders = readdirSync(dir, { withFileTypes: true });
               for (const folder of folders) {
                 if (!folder.isDirectory()) continue;
+                if (isSkillBlockedOnPlatform(folder.name)) continue;
                 const skillMdPath = join(dir, folder.name, 'SKILL.md');
                 if (!existsSync(skillMdPath)) continue;
 

@@ -4,7 +4,7 @@ import { join, resolve, sep } from 'path';
 import { createRequire } from 'module';
 import { query, type Query, type SDKUserMessage, type AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { getScriptDir, getBundledBunDir, getAgentBrowserCliPath } from './utils/runtime';
-import { getCrossPlatformEnv } from './utils/platform';
+import { getCrossPlatformEnv, isSkillBlockedOnPlatform } from './utils/platform';
 import { resizeImageIfNeeded } from './utils/imageResize';
 import { cronToolsServer, getCronTaskContext, clearCronTaskContext } from './tools/cron-tools';
 import { imCronToolServer, getImCronContext } from './tools/im-cron-tool';
@@ -98,6 +98,7 @@ export function syncProjectUserConfig(projectDir: string): void {
     for (const entry of readdirSync(userSkillsDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       if (entry.name.startsWith('.')) continue;
+      if (isSkillBlockedOnPlatform(entry.name)) continue;
 
       managedSkillNames.add(entry.name);
       const linkPath = join(projectSkillsDir, entry.name);
