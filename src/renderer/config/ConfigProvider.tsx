@@ -113,6 +113,12 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
         try {
             await ensureBundledWorkspace();
+            try {
+                const { invoke } = await import('@tauri-apps/api/core');
+                await invoke('cmd_sync_admin_agent');
+            } catch (e) {
+                console.warn('[ConfigProvider] Admin agent sync failed:', e);
+            }
 
             const [loadedConfig, loadedProjects, loadedProviders, loadedApiKeys, loadedVerifyStatus] = await Promise.all([
                 loadAppConfig(),

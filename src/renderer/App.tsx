@@ -2,11 +2,12 @@ import { useCallback, useEffect, useState, useRef, memo } from 'react';
 import { arrayMove } from '@dnd-kit/sortable';
 
 import { initAnalytics, track } from '@/analytics';
-import { stopTabSidecar, startGlobalSidecar, stopAllSidecars, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, getSessionActivation, updateSessionTab, ensureSessionSidecar, releaseSessionSidecar, activateSession, deactivateSession, upgradeSessionId, getSessionPort, stopSseProxy, startBackgroundCompletion, cancelBackgroundCompletion, sessionHasPersistentOwners } from '@/api/tauriClient';
+import { stopTabSidecar, startGlobalSidecar, stopAllSidecars, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, getSessionActivation, updateSessionTab, ensureSessionSidecar, releaseSessionSidecar, activateSession, deactivateSession, upgradeSessionId, getSessionPort, stopSseProxy, startBackgroundCompletion, cancelBackgroundCompletion } from '@/api/tauriClient';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import CustomTitleBar from '@/components/CustomTitleBar';
 import TabBar from '@/components/TabBar';
 import TabProvider from '@/context/TabProvider';
+import { useToast } from '@/components/Toast';
 import { useUpdater } from '@/hooks/useUpdater';
 import { useTrayEvents } from '@/hooks/useTrayEvents';
 import { useConfig } from '@/hooks/useConfig';
@@ -18,12 +19,30 @@ import {
   type Provider,
 } from '@/config/types';
 import { type Tab, type InitialMessage, createNewTab, getFolderName, MAX_TABS } from '@/types/tab';
+import type { ImageAttachment } from '@/components/SimpleChatInput';
 import { getAllCronTasks, getTabCronTask, updateCronTaskTab } from '@/api/cronTaskClient';
 import { type CronRecoverySummaryPayload, type CronTaskRecoveredPayload, CRON_EVENTS } from '@/types/cronEvents';
 import { isBrowserDevMode, isTauriEnvironment } from '@/utils/browserMock';
 import { apiGetJson, apiPostJson } from '@/api/apiFetch';
 import { forceFlushLogs, setLogServerUrl, clearLogServerUrl } from '@/utils/frontendLogger';
 import { CUSTOM_EVENTS, createPendingSessionId } from '../shared/constants';
+import { ensureSelfAwarenessWorkspace } from '@/config/configService';
+
+// ============================================================
+// User Support Prompt Builder
+// ============================================================
+
+function buildSupportPrompt(description: string, appVersion: string): string {
+  return [
+    `## 用户反馈`,
+    ``,
+    `**App 版本**: ${appVersion}`,
+    ``,
+    `> ${description}`,
+    ``,
+    `请使用 /support skill 帮助用户解决这个问题。`,
+  ].join('\n');
+}
 
 // ============================================================
 // MemoizedTabContent — prevents re-rendering tabs whose props haven't changed.
@@ -140,7 +159,8 @@ export default function App() {
   }, []);
 
   // App config for tray behavior (shared via ConfigProvider — no CONFIG_CHANGED event needed)
-  const { config } = useConfig();
+  // Also get projects + CRUD actions for bug report (ensureSelfAwarenessWorkspace needs them)
+  const { config, providers: appProviders, projects: configProjects, addProject: configAddProject, patchProject: configPatchProject } = useConfig();
 
   // Settings initial section state (for deep linking to specific section)
   const [settingsInitialSection, setSettingsInitialSection] = useState<string | undefined>(undefined);
@@ -156,15 +176,20 @@ export default function App() {
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
 
+  const appProvidersRef = useRef(appProviders);
+  appProvidersRef.current = appProviders;
+
+  const configProjectsRef = useRef(configProjects);
+  configProjectsRef.current = configProjects;
+
+  // Toast (ref-stabilized per CLAUDE.md rules)
+  const toast = useToast();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+
   // Per-tab loading state (keyed by tabId)
   const [loadingTabs, setLoadingTabs] = useState<Record<string, boolean>>({});
   const [tabErrors, setTabErrors] = useState<Record<string, string | null>>({});
-
-  // Tab close confirmation state
-  const [closeConfirmState, setCloseConfirmState] = useState<{
-    tabId: string;
-    tabTitle: string;
-  } | null>(null);
 
   // Exit confirmation state (for cron tasks)
   const [exitConfirmState, setExitConfirmState] = useState<{
@@ -509,21 +534,14 @@ export default function App() {
     void cleanupResources();
   }, []);
 
-  // Close tab with confirmation if generating (shows custom dialog)
-  // Exception: if a persistent owner (CronTask / ImBot) keeps the Sidecar alive,
-  // closing the Tab just releases the Tab owner — no work is lost, so skip confirmation.
+  // Close tab — if AI is generating, close immediately and let it finish in background.
+  // No confirmation dialog: background completion keeps the Sidecar alive.
   const closeTabWithConfirmation = useCallback(async (tabId: string) => {
     const tab = tabsRef.current.find(t => t.id === tabId);
 
     if (tab?.isGenerating && tab.sessionId) {
-      // Ask Rust if the Sidecar has background owners that survive this Tab closing
-      const hasBgOwner = await sessionHasPersistentOwners(tab.sessionId);
-      if (hasBgOwner) {
-        void performCloseTab(tabId);
-        return;
-      }
-
-      setCloseConfirmState({ tabId, tabTitle: tab.title });
+      void performCloseTab(tabId);
+      toastRef.current.info('AI 继续在后台完成任务');
       return;
     }
 
@@ -1246,6 +1264,80 @@ export default function App() {
     };
   }, []);
 
+  // Listen for LAUNCH_BUG_REPORT custom event (AI-powered bug reporting)
+  useEffect(() => {
+    const handleLaunchBugReport = async (event: CustomEvent<{
+      description: string;
+      providerId?: string;
+      model?: string;
+      appVersion: string;
+      images?: ImageAttachment[];
+    }>) => {
+      const { description, appVersion } = event.detail;
+      try {
+        // --- Pre-checks (before any Tab mutation) ---
+
+        // Prefer the provider chosen in the overlay, fallback to first available
+        const providerId = event.detail.providerId;
+        const provider = providerId
+          ? appProvidersRef.current.find(p => p.id === providerId)
+          : appProvidersRef.current[0];
+        if (!provider) {
+          console.error('[App] No providers available for bug report');
+          return;
+        }
+
+        if (tabsRef.current.length >= MAX_TABS) {
+          console.warn(`[App] Max tabs (${MAX_TABS}) reached, cannot open bug report`);
+          return;
+        }
+
+        // Ensure ~/.myagents registered as internal project
+        // (CLAUDE.md + skills are synced at startup via cmd_sync_admin_agent)
+        const project = await ensureSelfAwarenessWorkspace(
+          configProjectsRef.current,
+          configAddProject,
+          configPatchProject,
+        );
+        if (!project) {
+          console.error('[App] ensureSelfAwarenessWorkspace returned null');
+          return;
+        }
+
+        // --- All checks passed, safe to create Tab ---
+
+        const initialMessage: InitialMessage = {
+          text: buildSupportPrompt(description, appVersion),
+          providerId: provider.id,
+          model: event.detail.model,
+          images: event.detail.images,
+        };
+
+        const newTab = createNewTab();
+        setTabs((prev) => [...prev, newTab]);
+        setActiveTabId(newTab.id);
+        activeTabIdRef.current = newTab.id;
+
+        await handleLaunchProject(project, provider, undefined, initialMessage);
+
+        // Override tab title
+        setTabs((prev) =>
+          prev.map((t) =>
+            t.id === newTab.id ? { ...t, title: '问题诊断' } : t
+          )
+        );
+      } catch (err) {
+        console.error('[App] Failed to launch bug report:', err);
+      }
+    };
+    const listener = ((e: Event) => { void handleLaunchBugReport(e as CustomEvent); }) as EventListener;
+    window.addEventListener(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, listener);
+    return () => {
+      window.removeEventListener(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, listener);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- callbacks stabilized via refs, configAdd/patchProject are stable useCallbacks
+  }, [configAddProject, configPatchProject]);
+
   // Note: CRON_TASK_STOPPED event listener removed
   // With Session-centric Sidecar (Owner model), stopping a cron task only releases
   // the CronTask owner. If Tab still owns the Sidecar, it continues running.
@@ -1331,22 +1423,6 @@ export default function App() {
           />
         ))}
       </div>
-
-      {/* Close confirmation dialog */}
-      {closeConfirmState && (
-        <ConfirmDialog
-          title="关闭标签页"
-          message={`正在与 AI 对话中，确定要关闭「${closeConfirmState.tabTitle}」吗？`}
-          confirmText="关闭"
-          cancelText="取消"
-          confirmVariant="danger"
-          onConfirm={() => {
-            void performCloseTab(closeConfirmState.tabId);
-            setCloseConfirmState(null);
-          }}
-          onCancel={() => setCloseConfirmState(null)}
-        />
-      )}
 
       {/* Exit confirmation dialog for running cron tasks */}
       {exitConfirmState && (

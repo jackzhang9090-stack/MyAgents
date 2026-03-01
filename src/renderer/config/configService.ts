@@ -10,6 +10,7 @@ export {
     saveAppConfig,
     atomicModifyConfig,
     ensureBundledWorkspace,
+    ensureSelfAwarenessWorkspace,
     mergePresetCustomModels,
 } from './services/appConfigService';
 

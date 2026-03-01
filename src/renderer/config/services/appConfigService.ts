@@ -1,9 +1,10 @@
-// AppConfig core — load, save, atomicModify, migration, availableProviders, bundledWorkspace
+// AppConfig core — load, save, atomicModify, migration, availableProviders, bundledWorkspace, selfAwareness
 import { join } from '@tauri-apps/api/path';
 
 import {
     type AppConfig,
     DEFAULT_CONFIG,
+    type Project,
     type Provider,
 } from '../types';
 import {
@@ -206,5 +207,38 @@ export async function ensureBundledWorkspace(): Promise<boolean> {
     } catch (err) {
         console.warn('[configService] ensureBundledWorkspace failed:', err);
         return false;
+    }
+}
+
+// ============= Self-Awareness Workspace (Bug Report) =============
+
+/**
+ * Ensure ~/.myagents is registered as an internal project. Called on-demand when user triggers bug report.
+ *
+ * Accepts ConfigProvider's wrapped actions (addProject/patchProject) so that both disk AND React state
+ * are updated. Calling projectService directly would only write to disk, leaving ConfigProvider stale.
+ */
+export async function ensureSelfAwarenessWorkspace(
+    projects: Project[],
+    addProject: (path: string) => Promise<Project>,
+    patchProject: (id: string, updates: Partial<Omit<Project, 'id'>>) => Promise<void>,
+): Promise<Project | null> {
+    if (isBrowserDevMode()) return null;
+    try {
+        const dir = await getConfigDir();
+        const normalizedDir = dir.replace(/\\/g, '/');
+        let project = projects.find(p => p.path.replace(/\\/g, '/') === normalizedDir);
+        if (!project) {
+            project = await addProject(dir);
+        }
+        if (project && !project.internal) {
+            await patchProject(project.id, { internal: true, name: 'MyAgents 诊断' });
+            // patchProject updates both disk and React state; use the patched fields locally
+            project = { ...project, internal: true, name: 'MyAgents 诊断' };
+        }
+        return project ?? null;
+    } catch (err) {
+        console.warn('[configService] ensureSelfAwarenessWorkspace failed:', err);
+        return null;
     }
 }

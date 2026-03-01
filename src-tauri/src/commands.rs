@@ -545,3 +545,63 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
     Ok(())
 }
+
+// ============= Admin Agent Sync =============
+
+const ADMIN_AGENT_VERSION: &str = "3";
+
+/// Merge bundled admin agent files into ~/.myagents/
+/// Version-gated: only runs when ADMIN_AGENT_VERSION changes.
+#[tauri::command]
+pub fn cmd_sync_admin_agent<R: Runtime>(
+    app_handle: AppHandle<R>,
+) -> Result<bool, String> {
+    let home = dirs::home_dir().ok_or("Home dir not found")?;
+    let dest = home.join(".myagents");
+
+    // Version gate
+    let ver_file = dest.join(".admin-agent-version");
+    if ver_file.exists() {
+        let ver = fs::read_to_string(&ver_file).unwrap_or_default();
+        if ver.trim() == ADMIN_AGENT_VERSION {
+            return Ok(false);
+        }
+    }
+
+    // Source: app resources
+    let res = app_handle.path().resource_dir()
+        .map_err(|e| format!("Resource dir: {}", e))?;
+    let src = res.join("bundled-agents").join("myagents_helper");
+    if !src.exists() {
+        return Err(format!("Admin agent not found: {:?}", src));
+    }
+
+    // Merge into ~/.myagents/
+    merge_dir_recursive(&src, &dest)
+        .map_err(|e| format!("Merge failed: {}", e))?;
+
+    fs::write(&ver_file, ADMIN_AGENT_VERSION)
+        .map_err(|e| format!("Version write failed: {}", e))?;
+
+    ulog_info!("[admin-agent] Synced v{}", ADMIN_AGENT_VERSION);
+    Ok(true)
+}
+
+/// Merge src/ into dst/ recursively. Creates missing dirs, overwrites files, never deletes.
+fn merge_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == ".git" || name == "node_modules" { continue; }
+        let ft = entry.file_type()?;
+        if ft.is_symlink() { continue; }
+        let d = dst.join(&name);
+        if ft.is_dir() {
+            merge_dir_recursive(&entry.path(), &d)?;
+        } else {
+            fs::copy(&entry.path(), &d)?;
+        }
+    }
+    Ok(())
+}

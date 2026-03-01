@@ -103,8 +103,8 @@ import {
   waitForSessionIdle,
   setImStreamCallback,
   setGroupToolsDeny,
-  setSystemPromptConfig,
-  clearSystemPromptConfig,
+  setInteractionScenario,
+  resetInteractionScenario,
   rewindSession,
   getPendingInteractiveRequests,
   stripPlaywrightResults,
@@ -204,42 +204,6 @@ type CronExecutePayload = {
   /** Current execution number, 1-based (for System Prompt context) */
   executionNumber?: number;
 };
-
-/**
- * Build the System Prompt append content for cron task execution.
- * This content will be appended to the default claude_code system prompt.
- *
- * Note: User's original prompt is sent separately via enqueueUserMessage(),
- * keeping it clean without wrapper templates.
- */
-function buildCronSystemPromptAppend(
-  taskId: string,
-  intervalMinutes: number,
-  executionNumber: number,
-  aiCanExit: boolean
-): string {
-  // Format interval for display
-  const intervalText = intervalMinutes >= 60
-    ? `${Math.floor(intervalMinutes / 60)} 小时${intervalMinutes % 60 > 0 ? ` ${intervalMinutes % 60} 分钟` : ''}`
-    : `${intervalMinutes} 分钟`;
-
-  // Build base content - always present
-  let content = `<cron-task-instructions>
-你正处于循环任务模式 (Task ID: ${taskId})。
-每隔 ${intervalText} 系统触发执行一次，当前是第 ${executionNumber} 次执行。`;
-
-  // Only add exit instructions if AI can exit (avoid redundant info)
-  if (aiCanExit) {
-    content += `
-
-如果任务目标已完全达成，无需继续定时执行，请调用 \`mcp__cron-tools__exit_cron_task\` 工具来结束任务。`;
-  }
-
-  content += `
-</cron-task-instructions>`;
-
-  return content;
-}
 
 function parseArgs(argv: string[]): { agentDir: string; initialPrompt?: string; port: number; sessionId?: string; noPreWarm?: boolean } {
   const args = argv.slice(2);
@@ -1080,7 +1044,10 @@ async function main() {
       const url = new URL(request.url);
       const pathname = url.pathname;
 
-      console.log(`[http] ${request.method} ${pathname}`);
+      // Skip logging high-frequency polling paths
+      if (pathname !== '/api/unified-log' && pathname !== '/agent/dir' && pathname !== '/sessions') {
+        console.debug(`[http] ${request.method} ${pathname}`);
+      }
 
       // Handle CORS preflight requests (for browser dev mode via Vite proxy)
       if (request.method === 'OPTIONS') {
@@ -1475,28 +1442,25 @@ async function main() {
         // Pass sessionId for proper isolation between concurrent tasks
         setCronTaskContext(taskId, aiCanExit ?? false, currentSessionId);
 
-        // Set System Prompt append for cron task context
-        // This injects task instructions at the system prompt level (semantically correct)
-        // instead of wrapping the user's prompt
-        setSystemPromptConfig({
-          mode: 'append',
-          content: buildCronSystemPromptAppend(
-            taskId,
-            intervalMinutes ?? 15,
-            executionNumber ?? 1,
-            aiCanExit ?? false
-          )
+        // Set interaction scenario for cron task (L1 + L2-desktop + L3-cron)
+        setInteractionScenario({
+          type: 'cron',
+          taskId,
+          intervalMinutes: intervalMinutes ?? 15,
+          aiCanExit: aiCanExit ?? false,
         });
 
         try {
-          console.log(`[cron] execute taskId=${taskId} sessionId=${currentSessionId} interval=${intervalMinutes}min exec#${executionNumber} aiCanExit=${aiCanExit ?? false} prompt="${prompt.slice(0, 100)}..."`);
+          console.log(`[cron] execute taskId=${taskId} sessionId=${currentSessionId} interval=${intervalMinutes}min exec#=${executionNumber} aiCanExit=${aiCanExit ?? false} prompt="${prompt.slice(0, 100)}..."`);
           // Send the user's original prompt (clean, without wrapper templates)
           await enqueueUserMessage(prompt, [], permissionMode ?? 'auto', model, providerEnv);
+          // Reset scenario after enqueue — already consumed by startStreamingSession()
+          resetInteractionScenario();
           return jsonResponse({ success: true });
         } catch (error) {
           // Clear context on error
           clearCronTaskContext(currentSessionId);
-          clearSystemPromptConfig();
+          resetInteractionScenario();
           return jsonResponse(
             { success: false, error: error instanceof Error ? error.message : 'Unknown error' },
             500
@@ -1574,24 +1538,17 @@ async function main() {
         console.log(`[cron] execute-sync: cron context set for taskId=${taskId}`);
 
         // Set System Prompt append for cron task context
-        // This injects task instructions at the system prompt level (semantically correct)
-        // instead of wrapping the user's prompt
+        // Set interaction scenario for cron task (L1 + L2-desktop + L3-cron)
         try {
-          const systemPromptAppend = buildCronSystemPromptAppend(
+          setInteractionScenario({
+            type: 'cron',
             taskId,
-            intervalMinutes ?? 15,
-            executionNumber ?? 1,
-            aiCanExit ?? false
-          );
-          console.log(`[cron] execute-sync: system prompt built, length=${systemPromptAppend.length}`);
-
-          setSystemPromptConfig({
-            mode: 'append',
-            content: systemPromptAppend
+            intervalMinutes: intervalMinutes ?? 15,
+            aiCanExit: aiCanExit ?? false,
           });
-          console.log('[cron] execute-sync: system prompt config set');
+          console.log('[cron] execute-sync: interaction scenario set');
         } catch (e) {
-          console.error('[cron] execute-sync: error building/setting system prompt', e);
+          console.error('[cron] execute-sync: error setting interaction scenario', e);
           clearCronTaskContext(effectiveSessionId);
           return jsonResponse({ success: false, error: `System prompt error: ${e}` }, 500);
         }
@@ -1619,7 +1576,7 @@ async function main() {
               cancelQueueItem(enqueueResult.queueId);
             }
             clearCronTaskContext(effectiveSessionId);
-            clearSystemPromptConfig();
+            resetInteractionScenario();
             return jsonResponse({
               success: false,
               error: 'Execution timed out after 10 minutes'
@@ -1664,10 +1621,8 @@ async function main() {
 
           // Clear cron task context after execution
           clearCronTaskContext(effectiveSessionId);
-          // Note: System Prompt config is NOT cleared here intentionally.
-          // System Prompt only takes effect when query() is called (session creation).
-          // For single_session mode, subsequent executions reuse the existing session,
-          // so the config won't be used again anyway. Keeping it set is harmless.
+          // Reset scenario — already consumed by startStreamingSession() at session creation
+          resetInteractionScenario();
 
           console.log(`[cron] execute-sync taskId=${taskId} completed, aiRequestedExit=${aiRequestedExit}, exitReason=${exitReason}`);
 
@@ -1687,7 +1642,7 @@ async function main() {
         } catch (error) {
           // Clear context on error
           clearCronTaskContext(effectiveSessionId);
-          clearSystemPromptConfig();
+          resetInteractionScenario();
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
           console.error(`[cron] execute-sync taskId=${taskId} error:`, error);
           const errorResponse = { success: false, error: errorMessage };
@@ -1701,13 +1656,10 @@ async function main() {
       // GET /sessions - List all sessions or filter by agentDir
       if (pathname === '/sessions' && request.method === 'GET') {
         try {
-          console.log('[sessions] GET /sessions called');
           const agentDirParam = url.searchParams.get('agentDir');
-          console.log('[sessions] agentDirParam:', agentDirParam);
           const sessions = agentDirParam
             ? getSessionsByAgentDir(agentDirParam)
             : getAllSessionMetadata();
-          console.log('[sessions] found sessions:', sessions.length);
           return jsonResponse({ success: true, sessions });
         } catch (error) {
           console.error('[sessions] Error in GET /sessions:', error);
@@ -5384,6 +5336,7 @@ async function main() {
             model?: string;
             images?: Array<{ name: string; mimeType: string; data: string }>;
             botId?: string;
+            botName?: string;
             // Group context fields (v0.1.28)
             sourceType?: 'group';
             groupName?: string;
@@ -5425,13 +5378,17 @@ async function main() {
             });
           }
 
-          // Ensure IM session always has HEARTBEAT system prompt appended.
-          // This is idempotent — only takes effect when query() is created (first message).
+          // Set IM interaction scenario (L1 + L2-im + L3-heartbeat).
           // Must be set BEFORE enqueueUserMessage so startStreamingSession() picks it up.
-          setSystemPromptConfig({
-            mode: 'append',
-            content: `\n\n## HEARTBEAT 心跳机制\n\nYou will periodically receive heartbeat messages (a user message wrapped in tags like \`<HEARTBEAT>\\nThis is a heartbeat from the system.\\n……\\n</HEARTBEAT>\`).\nWhen you receive one, follow its instructions.`,
-          });
+          {
+            const [imPlatform, imSourceType] = payload.source.split('_') as ['telegram' | 'feishu', 'private' | 'group'];
+            setInteractionScenario({
+              type: 'im',
+              platform: imPlatform,
+              sourceType: imSourceType,
+              botName: payload.botName,
+            });
+          }
 
           // Build final message with group context (v0.1.28)
           let finalMessage = payload.message || '';
