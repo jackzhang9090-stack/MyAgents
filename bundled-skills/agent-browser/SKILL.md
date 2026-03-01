@@ -482,7 +482,7 @@ Anti-detection defaults are pre-configured in `~/.myagents/agent-browser.json` �
 agent-browser --user-agent "custom UA" open https://target.com
 ```
 
-**Persistent config edits:** edit `~/.myagents/agent-browser.json`. Remove `"_managed_by": "myagents"` to prevent app from overwriting changes. `args` field is split by **both comma and newline** — avoid args containing commas (e.g. `--window-size=W,H` will be split incorrectly; use `--start-maximized` instead). All CLI flags map to camelCase keys (`--executable-path` → `executablePath`).
+**Persistent config edits:** edit `~/.myagents/agent-browser.json`. **IMPORTANT:** This file is auto-managed by MyAgents — it regenerates on every app startup when `"_managed_by": "myagents"` is present. To make persistent edits that survive restarts, you **must** first delete the `"_managed_by"` field, then save your changes. `args` field is split by **both comma and newline** — avoid args containing commas (e.g. `--window-size=W,H` will be split incorrectly; use `--start-maximized` instead). All CLI flags map to camelCase keys (`--executable-path` → `executablePath`).
 
 Config priority (lowest → highest): `~/.agent-browser/config.json` < `./agent-browser.json` < env vars < CLI flags.
 
