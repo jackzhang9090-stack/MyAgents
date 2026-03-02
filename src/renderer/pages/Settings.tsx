@@ -29,6 +29,7 @@ import {
     PROXY_DEFAULTS,
     isValidProxyHost,
     getPresetMcpServer,
+    type ProviderVerifyStatus,
 } from '@/config/types';
 import {
     getAllMcpServers,
@@ -50,7 +51,9 @@ import {
     UNLOCK_CONFIG,
 } from '@/utils/developerMode';
 import { REACT_LOG_EVENT } from '@/utils/frontendLogger';
+import { CUSTOM_EVENTS } from '../../shared/constants';
 import { isTauriEnvironment } from '@/utils/browserMock';
+import { getPlatform } from '@/analytics/device';
 import { shortenPathForDisplay } from '@/utils/pathDetection';
 import type { LogEntry } from '@/types/log';
 import BugReportOverlay from '@/components/BugReportOverlay';
@@ -84,6 +87,21 @@ interface CustomProviderForm {
     apiKey: string;
     maxOutputTokens: string;  // 最大输出 token（字符串便于输入，空串=不限制）
     upstreamFormat: 'chat_completions' | 'responses';  // 上游 API 格式
+}
+
+/** Check if a provider is usable (duplicated from BugReportOverlay — only 2 call sites) */
+function isProviderAvailable(
+    provider: Provider,
+    apiKeys: Record<string, string>,
+    verifyStatus: Record<string, ProviderVerifyStatus>,
+): boolean {
+    if (provider.type === 'subscription') {
+        const status = verifyStatus[provider.id];
+        return status?.status === 'valid' && !!status.accountEmail;
+    }
+    const hasKey = !!apiKeys[provider.id];
+    const isInvalid = verifyStatus[provider.id]?.status === 'invalid';
+    return hasKey && !isInvalid;
 }
 
 const EMPTY_CUSTOM_FORM: CustomProviderForm = {
@@ -462,7 +480,45 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
         show: boolean;
         runtimeName?: string;
         downloadUrl?: string;
+        command?: string;
     }>({ show: false });
+
+    // Whether any provider is available (for "AI 小助理安装" button)
+    const showAiInstallButton = useMemo(
+        () => providers.some(p => p.models.length > 0 && isProviderAvailable(p, apiKeys, providerVerifyStatus)),
+        [providers, apiKeys, providerVerifyStatus],
+    );
+
+    const handleAiInstallRuntime = useCallback(() => {
+        const { runtimeName, command, downloadUrl } = runtimeDialog;
+        setRuntimeDialog({ show: false });
+
+        const platform = getPlatform();
+        const osName = platform.startsWith('darwin') ? 'macOS'
+            : platform.startsWith('windows') ? 'Windows'
+            : platform.startsWith('linux') ? 'Linux'
+            : platform;
+
+        const prompt = [
+            `## 依赖安装请求`,
+            ``,
+            `用户尝试启用一个 MCP 服务，但系统缺少必要的运行环境。`,
+            ``,
+            `- **缺少的运行环境**: ${runtimeName || command || '未知'}`,
+            `- **缺少的命令**: \`${command || '未知'}\``,
+            ...(downloadUrl ? [`- **官方下载地址**: ${downloadUrl}`] : []),
+            `- **操作系统**: ${osName}`,
+            ``,
+            `请帮助用户安装 \`${command}\`，安装完成后告知用户回到设置页面重新启用 MCP 服务。`,
+        ].join('\n');
+
+        const availableProvider = providers.find(p => p.models.length > 0 && isProviderAvailable(p, apiKeys, providerVerifyStatus));
+
+        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
+            detail: { description: prompt, providerId: availableProvider?.id, appVersion },
+        }));
+    }, [runtimeDialog, appVersion, providers, apiKeys, providerVerifyStatus]);
+
     // Builtin MCP settings dialog state
     const [builtinMcpSettings, setBuiltinMcpSettings] = useState<{
         server: McpServerDefinition;
@@ -589,6 +645,7 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                         show: true,
                         runtimeName: result.error.runtimeName,
                         downloadUrl: result.error.downloadUrl,
+                        command: result.error.command,
                     });
                 } else {
                     // Show toast for other errors
@@ -3459,33 +3516,48 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
 
             {/* Runtime not found dialog */}
             {runtimeDialog.show && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
-                    <div className="mx-4 w-full max-w-sm rounded-2xl bg-[var(--paper-elevated)] p-6 shadow-xl">
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+                    onClick={() => setRuntimeDialog({ show: false })}
+                >
+                    <div
+                        className="mx-4 w-full max-w-sm rounded-2xl bg-[var(--paper-elevated)] p-6 shadow-xl"
+                        onClick={e => e.stopPropagation()}
+                    >
                         <div className="flex items-center gap-3">
                             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--warning-bg)]">
                                 <AlertCircle className="h-5 w-5 text-[var(--warning)]" />
                             </div>
-                            <h3 className="text-lg font-semibold text-[var(--ink)]">缺少运行环境</h3>
+                            <h3 className="flex-1 text-lg font-semibold text-[var(--ink)]">缺少运行环境</h3>
+                            <button
+                                onClick={() => setRuntimeDialog({ show: false })}
+                                aria-label="关闭"
+                                className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]"
+                            >
+                                <X className="h-4 w-4" />
+                            </button>
                         </div>
                         <p className="mt-4 text-sm text-[var(--ink-muted)]">
                             此 MCP 服务依赖 <span className="font-medium text-[var(--ink)]">{runtimeDialog.runtimeName}</span> 运行，请先安装后再启用。
                         </p>
                         <div className="mt-6 flex gap-3">
-                            <button
-                                onClick={() => setRuntimeDialog({ show: false })}
-                                className="flex-1 rounded-lg border border-[var(--line)] px-4 py-2.5 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-contrast)]"
-                            >
-                                取消
-                            </button>
-                            <div onClick={() => setRuntimeDialog({ show: false })} className="flex-1">
+                            <div className="flex-1" onClick={() => setRuntimeDialog({ show: false })}>
                                 <ExternalLink
                                     href={runtimeDialog.downloadUrl || '#'}
-                                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-strong)]"
+                                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--line)] px-4 py-2.5 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-contrast)]"
                                 >
                                     去官网下载
                                     <ExternalLinkIcon className="h-3.5 w-3.5" />
                                 </ExternalLink>
                             </div>
+                            {showAiInstallButton && (
+                                <button
+                                    onClick={handleAiInstallRuntime}
+                                    className="flex-1 rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-strong)]"
+                                >
+                                    让 AI 小助理安装
+                                </button>
+                            )}
                         </div>
                     </div>
                 </div>
