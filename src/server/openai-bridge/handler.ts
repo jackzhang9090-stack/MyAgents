@@ -93,9 +93,7 @@ export function createBridgeHandler(config: BridgeConfig): (request: Request) =>
       }
     }
 
-    const logModel = isResponses
-      ? (translatedReq as { model: string }).model
-      : (translatedReq as { model: string }).model;
+    const logModel = (translatedReq as { model: string }).model;
     log(`[bridge] ${anthropicReq.model} → ${logModel} stream=${!!anthropicReq.stream} tools=${anthropicReq.tools?.length ?? 0} format=${isResponses ? 'responses' : 'chat_completions'}`);
 
     // 5. Forward to upstream

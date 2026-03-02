@@ -23,8 +23,6 @@ export class ResponsesStreamTranslator {
 
   // Track function calls by output_index
   private functionCallBuffers = new Map<number, FunctionCallBuffer>();
-  // Track which output_index has an active text block
-  private activeTextOutputIndex = -1;
   // Track reasoning block
   private hasActiveReasoning = false;
 
@@ -224,9 +222,11 @@ export class ResponsesStreamTranslator {
     const buffer = this.functionCallBuffers.get(outputIndex);
     if (buffer) {
       events.push({ type: 'content_block_stop', index: buffer.anthropicIndex });
-      // Only advance contentIndex if this was the active block
-      if (this.activeBlockType === 'tool_use') {
+      // Advance contentIndex if this buffer's block is the current one
+      if (buffer.anthropicIndex === this.contentIndex) {
         this.contentIndex++;
+      }
+      if (this.activeBlockType === 'tool_use') {
         this.activeBlockType = null;
       }
     } else {

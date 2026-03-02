@@ -5,18 +5,12 @@ import type { OpenAIRequest } from '../types/openai';
 import type { BridgeConfig } from '../types/bridge';
 import { translateMessages } from './messages';
 import { translateToolDefinitions, translateToolChoice } from './tools';
+import { budgetToReasoningEffort } from './usage';
 
 export interface TranslateRequestOptions {
   modelMapping?: BridgeConfig['modelMapping'];
   /** Override model name (highest priority) */
   modelOverride?: string;
-}
-
-/** Map thinking.budget_tokens → reasoning_effort level */
-function budgetToReasoningEffort(budgetTokens: number): 'low' | 'medium' | 'high' {
-  if (budgetTokens <= 2048) return 'low';
-  if (budgetTokens <= 8192) return 'medium';
-  return 'high';
 }
 
 /** Translate Anthropic Messages API request → OpenAI Chat Completions request */

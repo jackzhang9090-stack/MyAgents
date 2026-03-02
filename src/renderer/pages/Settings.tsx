@@ -2170,9 +2170,9 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                             <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                                 <div className="flex items-center justify-between">
                                     <div>
-                                        <h3 className="text-base font-medium text-[var(--ink)]">AI 反馈答疑</h3>
+                                        <h3 className="text-base font-medium text-[var(--ink)]">AI 小助理</h3>
                                         <p className="mt-1 text-xs text-[var(--ink-muted)]">
-                                            AI 将分析本地日志进行答疑与上报问题或建议
+                                            AI 小助理将分析本地日志进行功能答疑、上报问题或建议
                                         </p>
                                     </div>
                                     <button
@@ -2956,7 +2956,7 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                                             onChange={() => setCustomForm((p) => ({ ...p, apiProtocol: 'anthropic', authType: 'auth_token' }))}
                                             className="accent-[var(--ink)]"
                                         />
-                                        <span className="text-sm text-[var(--ink)]">Anthropic 兼容</span>
+                                        <span className="text-sm text-[var(--ink)]">Anthropic 协议</span>
                                     </label>
                                     <label className="flex items-center gap-2 cursor-pointer">
                                         <input
@@ -2967,7 +2967,7 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                                             onChange={() => setCustomForm((p) => ({ ...p, apiProtocol: 'openai', authType: 'api_key' }))}
                                             className="accent-[var(--ink)]"
                                         />
-                                        <span className="text-sm text-[var(--ink)]">OpenAI 兼容</span>
+                                        <span className="text-sm text-[var(--ink)]">OpenAI 协议</span>
                                     </label>
                                 </div>
                             </div>
@@ -2987,62 +2987,79 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
 
                             {customForm.apiProtocol === 'openai' && (
                                 <>
-                                    <div className="flex gap-4">
-                                        <div className="flex-1">
-                                            <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">最大输出 Token</label>
-                                            <input
-                                                type="number"
-                                                value={customForm.maxOutputTokens}
-                                                onChange={(e) => setCustomForm((p) => ({ ...p, maxOutputTokens: e.target.value }))}
-                                                placeholder="8192"
-                                                className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm transition-colors focus:border-[var(--ink)] focus:outline-none"
-                                            />
-                                        </div>
-                                        <div className="flex-1">
-                                            <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">上游格式</label>
-                                            <select
-                                                value={customForm.upstreamFormat}
-                                                onChange={(e) => setCustomForm((p) => ({ ...p, upstreamFormat: e.target.value as 'chat_completions' | 'responses' }))}
-                                                className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm transition-colors focus:border-[var(--ink)] focus:outline-none"
-                                            >
-                                                <option value="chat_completions">Chat Completions</option>
-                                                <option value="responses">Responses API</option>
-                                            </select>
+                                    <div>
+                                        <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">最大输出 Token</label>
+                                        <input
+                                            type="number"
+                                            value={customForm.maxOutputTokens}
+                                            onChange={(e) => setCustomForm((p) => ({ ...p, maxOutputTokens: e.target.value }))}
+                                            placeholder="8192"
+                                            className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm transition-colors focus:border-[var(--ink)] focus:outline-none"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">接口格式</label>
+                                        <div className="flex gap-4">
+                                            <label className="flex items-center gap-2 cursor-pointer">
+                                                <input
+                                                    type="radio"
+                                                    name="create-upstreamFormat"
+                                                    value="chat_completions"
+                                                    checked={customForm.upstreamFormat === 'chat_completions'}
+                                                    onChange={() => setCustomForm((p) => ({ ...p, upstreamFormat: 'chat_completions' }))}
+                                                    className="accent-[var(--ink)]"
+                                                />
+                                                <span className="text-sm text-[var(--ink)]">Chat Completions</span>
+                                            </label>
+                                            <label className="flex items-center gap-2 cursor-pointer">
+                                                <input
+                                                    type="radio"
+                                                    name="create-upstreamFormat"
+                                                    value="responses"
+                                                    checked={customForm.upstreamFormat === 'responses'}
+                                                    onChange={() => setCustomForm((p) => ({ ...p, upstreamFormat: 'responses' }))}
+                                                    className="accent-[var(--ink)]"
+                                                />
+                                                <span className="text-sm text-[var(--ink)]">Responses API</span>
+                                            </label>
                                         </div>
                                     </div>
                                 </>
                             )}
 
-                            <div>
-                                <label className="mb-0.5 block text-sm font-medium text-[var(--ink)]">认证方式</label>
-                                <p className="mb-1.5 text-xs text-[var(--ink-muted)]">
-                                    请根据供应商认证参数进行选择
-                                </p>
-                                <div className="flex gap-4">
-                                    <label className="flex items-center gap-2 cursor-pointer">
-                                        <input
-                                            type="radio"
-                                            name="create-authType"
-                                            value="auth_token"
-                                            checked={customForm.authType === 'auth_token'}
-                                            onChange={() => setCustomForm((p) => ({ ...p, authType: 'auth_token' }))}
-                                            className="accent-[var(--ink)]"
-                                        />
-                                        <span className="text-sm text-[var(--ink)]">AUTH_TOKEN</span>
-                                    </label>
-                                    <label className="flex items-center gap-2 cursor-pointer">
-                                        <input
-                                            type="radio"
-                                            name="create-authType"
-                                            value="api_key"
-                                            checked={customForm.authType === 'api_key'}
-                                            onChange={() => setCustomForm((p) => ({ ...p, authType: 'api_key' }))}
-                                            className="accent-[var(--ink)]"
-                                        />
-                                        <span className="text-sm text-[var(--ink)]">API_KEY</span>
-                                    </label>
+                            {/* Auth Type - only meaningful for Anthropic protocol (controls x-api-key vs Authorization header) */}
+                            {customForm.apiProtocol !== 'openai' && (
+                                <div>
+                                    <label className="mb-0.5 block text-sm font-medium text-[var(--ink)]">认证方式</label>
+                                    <p className="mb-1.5 text-xs text-[var(--ink-muted)]">
+                                        请根据供应商认证参数进行选择
+                                    </p>
+                                    <div className="flex gap-4">
+                                        <label className="flex items-center gap-2 cursor-pointer">
+                                            <input
+                                                type="radio"
+                                                name="create-authType"
+                                                value="auth_token"
+                                                checked={customForm.authType === 'auth_token'}
+                                                onChange={() => setCustomForm((p) => ({ ...p, authType: 'auth_token' }))}
+                                                className="accent-[var(--ink)]"
+                                            />
+                                            <span className="text-sm text-[var(--ink)]">AUTH_TOKEN</span>
+                                        </label>
+                                        <label className="flex items-center gap-2 cursor-pointer">
+                                            <input
+                                                type="radio"
+                                                name="create-authType"
+                                                value="api_key"
+                                                checked={customForm.authType === 'api_key'}
+                                                onChange={() => setCustomForm((p) => ({ ...p, authType: 'api_key' }))}
+                                                className="accent-[var(--ink)]"
+                                            />
+                                            <span className="text-sm text-[var(--ink)]">API_KEY</span>
+                                        </label>
+                                    </div>
                                 </div>
-                            </div>
+                            )}
 
                             <div>
                                 <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">
@@ -3215,7 +3232,7 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                                                 onChange={() => setEditingProvider((p) => p ? { ...p, editApiProtocol: 'anthropic', editAuthType: 'auth_token' } : null)}
                                                 className="accent-[var(--ink)]"
                                             />
-                                            <span className="text-sm text-[var(--ink)]">Anthropic 兼容</span>
+                                            <span className="text-sm text-[var(--ink)]">Anthropic 协议</span>
                                         </label>
                                         <label className="flex items-center gap-2 cursor-pointer">
                                             <input
@@ -3226,7 +3243,7 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                                                 onChange={() => setEditingProvider((p) => p ? { ...p, editApiProtocol: 'openai', editAuthType: 'api_key' } : null)}
                                                 className="accent-[var(--ink)]"
                                             />
-                                            <span className="text-sm text-[var(--ink)]">OpenAI 兼容</span>
+                                            <span className="text-sm text-[var(--ink)]">OpenAI 协议</span>
                                         </label>
                                     </div>
                                 </div>
@@ -3254,8 +3271,8 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
 
                             {/* OpenAI Bridge Settings - only for custom providers with OpenAI protocol */}
                             {!editingProvider.provider.isBuiltin && editingProvider.editApiProtocol === 'openai' && (
-                                <div className="flex gap-4">
-                                    <div className="flex-1">
+                                <>
+                                    <div>
                                         <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">最大输出 Token</label>
                                         <input
                                             type="number"
@@ -3265,22 +3282,38 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                                             className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm transition-colors focus:border-[var(--ink)] focus:outline-none"
                                         />
                                     </div>
-                                    <div className="flex-1">
-                                        <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">上游格式</label>
-                                        <select
-                                            value={editingProvider.editUpstreamFormat || 'chat_completions'}
-                                            onChange={(e) => setEditingProvider((p) => p ? { ...p, editUpstreamFormat: e.target.value as 'chat_completions' | 'responses' } : null)}
-                                            className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm transition-colors focus:border-[var(--ink)] focus:outline-none"
-                                        >
-                                            <option value="chat_completions">Chat Completions</option>
-                                            <option value="responses">Responses API</option>
-                                        </select>
+                                    <div>
+                                        <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">接口格式</label>
+                                        <div className="flex gap-4">
+                                            <label className="flex items-center gap-2 cursor-pointer">
+                                                <input
+                                                    type="radio"
+                                                    name="edit-upstreamFormat"
+                                                    value="chat_completions"
+                                                    checked={(editingProvider.editUpstreamFormat || 'chat_completions') === 'chat_completions'}
+                                                    onChange={() => setEditingProvider((p) => p ? { ...p, editUpstreamFormat: 'chat_completions' } : null)}
+                                                    className="accent-[var(--ink)]"
+                                                />
+                                                <span className="text-sm text-[var(--ink)]">Chat Completions</span>
+                                            </label>
+                                            <label className="flex items-center gap-2 cursor-pointer">
+                                                <input
+                                                    type="radio"
+                                                    name="edit-upstreamFormat"
+                                                    value="responses"
+                                                    checked={editingProvider.editUpstreamFormat === 'responses'}
+                                                    onChange={() => setEditingProvider((p) => p ? { ...p, editUpstreamFormat: 'responses' } : null)}
+                                                    className="accent-[var(--ink)]"
+                                                />
+                                                <span className="text-sm text-[var(--ink)]">Responses API</span>
+                                            </label>
+                                        </div>
                                     </div>
-                                </div>
+                                </>
                             )}
 
-                            {/* Auth Type - only for custom providers */}
-                            {!editingProvider.provider.isBuiltin && (
+                            {/* Auth Type - only for custom providers with Anthropic protocol */}
+                            {!editingProvider.provider.isBuiltin && editingProvider.editApiProtocol !== 'openai' && (
                                 <div>
                                     <label className="mb-0.5 block text-sm font-medium text-[var(--ink)]">认证方式</label>
                                     <p className="mb-1.5 text-xs text-[var(--ink-muted)]">

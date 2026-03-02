@@ -3,17 +3,11 @@
 import type { AnthropicRequest, AnthropicMessage, AnthropicToolResultBlock, AnthropicSystemBlock } from '../types/anthropic';
 import type { ResponsesRequest, ResponsesInputItem, ResponsesInputContentPart, ResponsesInputFunctionCall, ResponsesToolChoice } from '../types/openai-responses';
 import type { BridgeConfig } from '../types/bridge';
+import { budgetToReasoningEffort } from './usage';
 
 export interface TranslateRequestResponsesOptions {
   modelMapping?: BridgeConfig['modelMapping'];
   modelOverride?: string;
-}
-
-/** Map thinking.budget_tokens → reasoning_effort level */
-function budgetToReasoningEffort(budgetTokens: number): 'low' | 'medium' | 'high' {
-  if (budgetTokens <= 2048) return 'low';
-  if (budgetTokens <= 8192) return 'medium';
-  return 'high';
 }
 
 /** Translate Anthropic Messages API request → OpenAI Responses API request */
