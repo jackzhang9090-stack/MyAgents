@@ -1963,7 +1963,6 @@ async function main() {
 
       if (pathname === '/agent/dir' && request.method === 'GET') {
         try {
-          console.log('[agent] dir');
           const info = await buildDirectoryTree(currentAgentDir);
           return jsonResponse(info);
         } catch (error) {

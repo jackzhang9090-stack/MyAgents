@@ -22,6 +22,24 @@ import { localTimestamp } from '../shared/logTime';
 // Module-level debug mode check (avoids repeated environment variable access)
 const isDebugMode = process.env.DEBUG === '1' || process.env.NODE_ENV === 'development';
 
+// Max length for individual string values in SDK message logs.
+// Base64 images can be several MB; truncate to keep logs readable.
+const LOG_STRING_MAX_LEN = 500;
+
+/** JSON.stringify with long string truncation (e.g. base64 image data) for logging. */
+function logStringify(obj: unknown): string {
+  try {
+    return JSON.stringify(obj, (_key, value) => {
+      if (typeof value === 'string' && value.length > LOG_STRING_MAX_LEN) {
+        return value.slice(0, LOG_STRING_MAX_LEN) + `...(${value.length} chars)`;
+      }
+      return value;
+    });
+  } catch {
+    return '[unserializable]';
+  }
+}
+
 // Decorative text filter thresholds (for third-party API wrappers like 智谱 GLM-4.7)
 // Decorative blocks are typically 100-2000 chars; we use wider range for safety margin
 const DECORATIVE_TEXT_MIN_LENGTH = 50;
@@ -3903,9 +3921,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
     for await (const sdkMessage of querySession) {
       messageCount++;
-      console.debug(`[agent][sdk] message #${messageCount} type=${sdkMessage.type}`);
+      // stream_event is high-frequency (per token delta) — skip logging entirely;
+      // other types (user/assistant/result/system_init) are low-frequency and important
+      if (sdkMessage.type !== 'stream_event') {
+        console.log(`[agent][sdk] message #${messageCount} type=${sdkMessage.type}`, logStringify(sdkMessage));
+      }
       try {
-        const line = `${localTimestamp()} ${JSON.stringify(sdkMessage)}`;
+        const line = `${localTimestamp()} ${logStringify(sdkMessage)}`;
         appendLogLine(line);
       } catch (error) {
         console.log('[agent][sdk] (unserializable)', error);
