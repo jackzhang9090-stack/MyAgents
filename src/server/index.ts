@@ -3367,7 +3367,8 @@ async function main() {
               const timeout = setTimeout(() => controller.abort(), 15000);
 
               const headers: Record<string, string> = {
-                'Accept': server.type === 'sse' ? 'text/event-stream' : 'application/json',
+                // Streamable HTTP 规范要求同时声明两种格式；SSE 只需 event-stream
+                'Accept': server.type === 'sse' ? 'text/event-stream' : 'application/json, text/event-stream',
                 ...(server.headers || {}),
               };
 
@@ -3444,12 +3445,18 @@ async function main() {
               }
 
               if (!response.ok) {
+                // 尝试读取 response body 以获取更具体的错误信息
+                let detail = '';
+                try {
+                  const body = await response.json() as Record<string, unknown>;
+                  detail = (body.message || body.msg || body.error || '') as string;
+                } catch { /* body 不是 JSON，忽略 */ }
                 cleanup();
                 return jsonResponse({
                   success: false,
                   error: {
                     type: 'connection_failed',
-                    message: `服务器返回错误 (HTTP ${response.status})`,
+                    message: `服务器返回错误 (HTTP ${response.status})${detail ? '：' + detail : ''}`,
                   }
                 });
               }
