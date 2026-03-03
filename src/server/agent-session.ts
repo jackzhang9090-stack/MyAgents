@@ -9,6 +9,10 @@ import { resizeImageIfNeeded, resizeToolImageContent } from './utils/imageResize
 import { cronToolsServer, getCronTaskContext, clearCronTaskContext } from './tools/cron-tools';
 import { imCronToolServer, getImCronContext } from './tools/im-cron-tool';
 import { imMediaToolServer, getImMediaContext, clearImMediaContext } from './tools/im-media-tool';
+import { getBuiltinMcp } from './tools/builtin-mcp-registry';
+// Side-effect imports: each registers itself in the builtin MCP registry
+import './tools/gemini-image-tool';
+import './tools/edge-tts-tool';
 
 import type { ToolInput } from '../renderer/types/chat';
 import { parsePartialJson } from '../shared/parsePartialJson';
@@ -319,6 +323,13 @@ const toolResultIndexToId: Map<number, string> = new Map();
 // IM Draft Stream: callback for streaming text to Telegram
 type ImStreamCallback = (event: 'delta' | 'block-end' | 'complete' | 'error' | 'permission-request' | 'activity', data: string) => void;
 let imStreamCallback: ImStreamCallback | null = null;
+// Cross-turn guard: set to true when imStreamCallback is nulled (timeout/error) or replaced
+// (defense-in-depth) during a turn. Reset to false by messageGenerator before each yield.
+// handleMessageComplete/Stopped only fires 'complete' when flag is false, preventing
+// a stale turn's completion from consuming a subsequent turn's SSE stream.
+// Race-safe: unlike a generation counter snapshot (which can run before setImStreamCallback),
+// this flag is set BY setImStreamCallback itself, so ordering is guaranteed.
+let imCallbackNulledDuringTurn = false;
 // Group chat tool deny list (v0.1.28): set per IM message, cleared on next non-group request
 let currentGroupToolsDeny: string[] = [];
 // Flag: auto-reset session after image content pollutes conversation history
@@ -624,15 +635,13 @@ export function setProxyConfig(proxySettings: {
  * If MCP config changed and a session is running, it will be restarted with resume
  */
 export function setMcpServers(servers: McpServerDefinition[]): void {
-  // Check if MCP config actually changed
-  const currentIds = (currentMcpServers ?? []).map(s => s.id).sort().join(',');
-  const newIds = servers.map(s => s.id).sort().join(',');
-  const mcpChanged = currentIds !== newIds;
+  // Detect config changes: compare full config fingerprint (not just IDs)
+  // so that env/args changes (e.g. API key update) also trigger session restart.
+  const mcpChanged = mcpConfigFingerprint(currentMcpServers ?? []) !== mcpConfigFingerprint(servers);
 
   currentMcpServers = servers;
   if (isDebugMode) {
     console.log(`[agent] MCP servers set: ${servers.map(s => s.id).join(', ') || 'none'}`);
-    // Log servers with custom env vars for debugging
     for (const s of servers) {
       if (s.env && Object.keys(s.env).length > 0) {
         console.log(`[agent] MCP ${s.id}: Has custom env vars: ${Object.keys(s.env).join(', ')}`);
@@ -642,14 +651,15 @@ export function setMcpServers(servers: McpServerDefinition[]): void {
 
   // If MCP changed and session is running, restart with resume to apply new config
   if (mcpChanged && querySession) {
+    const ids = servers.map(s => s.id).join(', ') || 'none';
     if (isProcessing && !isPreWarming) {
       // Active user turn in progress (e.g. IM responding) — defer restart to avoid killing mid-response.
       // The restart will fire after the current turn completes (see signalTurnComplete handler).
       // Pre-warm sessions are safe to abort immediately (no user message to lose).
-      console.log(`[agent] MCP config changed (${currentIds || 'none'} -> ${newIds || 'none'}), deferring restart (active turn)`);
+      console.log(`[agent] MCP config changed → [${ids}], deferring restart (active turn)`);
       pendingConfigRestart = true;
     } else {
-      if (isDebugMode) console.log(`[agent] MCP config changed (${currentIds || 'none'} -> ${newIds || 'none'}), restarting session with resume`);
+      if (isDebugMode) console.log(`[agent] MCP config changed → [${ids}], restarting session with resume`);
       abortPersistentSession();
     }
   }
@@ -659,6 +669,16 @@ export function setMcpServers(servers: McpServerDefinition[]): void {
   if (!isProcessing || isPreWarming) {
     schedulePreWarm();
   }
+}
+
+/** Stable fingerprint of MCP config for change detection (covers id + command + args + env + url + headers) */
+function mcpConfigFingerprint(servers: McpServerDefinition[]): string {
+  return JSON.stringify(
+    servers
+      .slice()
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map(s => ({ id: s.id, type: s.type, command: s.command, args: s.args, url: s.url, env: s.env, headers: s.headers }))
+  );
 }
 
 /**
@@ -892,18 +912,20 @@ function pinMcpPackageVersions(args: string[]): string[] {
 }
 
 /**
- * Convert McpServerDefinition to SDK mcpServers format
+ * Convert McpServerDefinition to SDK mcpServers format.
  *
- * Execution strategy:
+ * Three MCP injection patterns:
+ * 1. Context-injected (cron-tools, im-cron, im-media) — always present based on sidecar context,
+ *    invisible in Settings UI, not user-toggled.
+ * 2. Builtin registry (command='__builtin__') — in-process servers, user-toggled via Settings,
+ *    self-registered via builtin-mcp-registry.ts. Adding a new one = add registerBuiltinMcp()
+ *    call in the tool file + side-effect import below.
+ * 3. External (stdio/sse/http) — subprocess or remote servers, user-configured.
+ *
+ * Execution strategy for external stdio:
  * - For npx commands: Uses bundled bun (bun x), fallback to npx if bun unavailable
  * - For other commands: Uses user-specified command directly (node/python etc.)
- * - Does NOT inject proxy env vars (follows Claude Code's approach)
- *   Child process inherits environment naturally from shell
- *
- * This approach:
- * - Zero external dependencies: bundled bun ensures MCP works without Node.js
- * - Fallback to npx for environments where bun is unavailable
- * - Custom MCP can use any user-preferred tools
+ * - Strips proxy env vars to prevent MCP WebSocket breakage
  */
 function buildSdkMcpServers(): Record<string, SdkMcpServerConfig | typeof cronToolsServer> {
   // null = MCP not yet configured (e.g. Global sidecar, or Tab pre-warm before /api/mcp/set)
@@ -916,7 +938,7 @@ function buildSdkMcpServers(): Record<string, SdkMcpServerConfig | typeof cronTo
 
   const result: Record<string, SdkMcpServerConfig | typeof cronToolsServer> = {};
 
-  // Add cron tools server if we're in a cron task context
+  // --- Pattern 1: Context-injected MCPs (always present based on sidecar context) ---
   const cronContext = getCronTaskContext();
   if (cronContext.taskId) {
     result['cron-tools'] = cronToolsServer;
@@ -937,15 +959,29 @@ function buildSdkMcpServers(): Record<string, SdkMcpServerConfig | typeof cronTo
     console.log(`[agent] Added im-media MCP server for bot ${imMediaCtx.botId}`);
   }
 
+  // --- Pattern 2: Builtin registry MCPs (in-process, user-toggled) ---
+  for (const server of servers) {
+    if (server.command !== '__builtin__') continue;
+    const entry = getBuiltinMcp(server.id);
+    if (entry) {
+      entry.configure(server.env || {}, { sessionId: sessionId || 'default', workspace: agentDir });
+      result[server.id] = entry.server as typeof cronToolsServer;
+      console.log(`[agent] Added builtin MCP: ${server.id}`);
+    }
+  }
+
+  // --- Pattern 3: External MCPs (stdio/sse/http subprocess or remote) ---
+  const externalServers = servers.filter(s => s.command !== '__builtin__');
+
   // Return early if no user MCP servers (but may have cron-tools)
-  if (servers.length === 0) {
+  if (externalServers.length === 0) {
     if (Object.keys(result).length > 0) {
       console.log(`[agent] Built SDK MCP servers: ${Object.keys(result).join(', ')}`);
     }
     return result;
   }
 
-  for (const server of servers) {
+  for (const server of externalServers) {
     // Log server env for debugging
     if (isDebugMode && server.env && Object.keys(server.env).length > 0) {
       console.log(`[agent] MCP ${server.id}: Custom env vars: ${Object.keys(server.env).join(', ')}`);
@@ -1641,13 +1677,15 @@ function localizeImError(rawError: string): string {
   if (rawError.includes('authentication') || rawError.includes('unauthorized') || rawError.includes('401')) {
     return 'API 认证失败，请检查 API Key 配置';
   }
-  // Rate limiting
+  // Billing / quota errors (check BEFORE rate_limit — quota messages may contain "429")
+  if (rawError.includes('billing') || rawError.includes('insufficient_quota')
+    || rawError.includes('quota_exceeded') || rawError.includes('quota exceeded')
+    || rawError.includes('exceeded your current quota') || rawError.includes('payment required')) {
+    return 'API 余额不足，请充值后重试';
+  }
+  // Rate limiting (transient — safe to retry)
   if (rawError.includes('rate_limit') || rawError.includes('429')) {
     return 'API 请求频率超限，请稍后重试';
-  }
-  // Billing errors
-  if (rawError.includes('billing') || rawError.includes('insufficient_quota') || rawError.includes('quota_exceeded')) {
-    return 'API 余额不足，请充值后重试';
   }
   // Server overloaded
   if (rawError.includes('overloaded') || rawError.includes('503')) {
@@ -1680,9 +1718,16 @@ export function setImStreamCallback(cb: ImStreamCallback | null): void {
   // silent callback replacement that would leave the old SSE stream hanging.
   if (cb !== null && imStreamCallback !== null) {
     console.warn('[agent] setImStreamCallback: replacing active callback — notifying old stream');
+    imCallbackNulledDuringTurn = true;
     try {
       imStreamCallback('error', '消息处理被新请求取代');
     } catch { /* old stream may already be closed */ }
+  }
+  // Mark callback as stale when it's being nulled (e.g., SSE safety timeout, closeStream).
+  // handleMessageComplete/Stopped checks this flag to avoid sending 'complete' to a
+  // replacement callback that belongs to a different turn.
+  if (cb === null && imStreamCallback !== null) {
+    imCallbackNulledDuringTurn = true;
   }
   imStreamCallback = cb;
 }
@@ -2328,8 +2373,10 @@ function handleToolResultComplete(toolUseId: string, content: string, isError?: 
 
 function handleMessageComplete(): void {
   isStreamingMessage = false;
-  // Notify IM stream: turn complete
-  if (imStreamCallback) {
+  // Notify IM stream: turn complete — only if callback was NOT nulled/replaced during this turn.
+  // A nulled callback means the SSE stream timed out and a new one may have been set for a
+  // subsequent queued message; firing 'complete' here would consume the wrong stream.
+  if (imStreamCallback && !imCallbackNulledDuringTurn) {
     imStreamCallback('complete', '');
     imStreamCallback = null;
   }
@@ -2364,8 +2411,8 @@ function handleMessageComplete(): void {
 
 function handleMessageStopped(): void {
   isStreamingMessage = false;
-  // Notify IM stream: turn complete (stopped)
-  if (imStreamCallback) {
+  // Notify IM stream: turn complete (stopped) — cross-turn guard prevents misfire
+  if (imStreamCallback && !imCallbackNulledDuringTurn) {
     imStreamCallback('complete', '');
     imStreamCallback = null;
   }
@@ -2758,6 +2805,17 @@ function clearMessageState(): void {
   isStreamingMessage = false;
   messageSequence = 0;
   pendingConfigRestart = false;
+}
+
+/** 排空消息队列，逐条广播 queue:cancelled。用于 session 意外死亡时通知前端清除队列 UI。 */
+function drainQueueWithCancellation(): void {
+  if (messageQueue.length === 0) return;
+  console.log(`[agent] Draining ${messageQueue.length} queued messages (session dead)`);
+  for (const item of messageQueue) {
+    item.resolve();
+    broadcast('queue:cancelled', { queueId: item.id });
+  }
+  messageQueue.length = 0;
 }
 
 /**
@@ -3392,6 +3450,7 @@ export async function enqueueUserMessage(
   if (!isSessionActive()) {
     // 无活跃 session（pre-warm 失败或首次启动）→ 先入队再启动 session
     console.log('[agent] starting session (idle -> running)');
+    preWarmFailCount = 0; // 用户主动操作重置重试计数
     messageQueue.push(queueItem);
     startStreamingSession().catch((error) => {
       console.error('[agent] failed to start session', error);
@@ -3521,8 +3580,18 @@ export async function forceExecuteQueueItem(queueId: string): Promise<boolean> {
     messageQueue.unshift(item);
   }
 
-  // Interrupt current AI response — messageGenerator will naturally yield the queue front
-  await interruptCurrentResponse();
+  if (isSessionActive()) {
+    // Session 存活：中断当前响应，generator 会自然消费队列头部
+    await interruptCurrentResponse();
+  } else {
+    // Session 已死：generator 不存在，无人消费队列。
+    // 启动新 session 来处理队列中的消息。
+    console.log('[agent] forceExecuteQueueItem: session dead, starting new session');
+    preWarmFailCount = 0;
+    startStreamingSession().catch((error) => {
+      console.error('[agent] forceExecuteQueueItem: failed to start session', error);
+    });
+  }
   return true;
 }
 
@@ -4038,8 +4107,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                   broadcast('chat:message-chunk', streamEvent.delta.text);
                   appendTextChunk(streamEvent.delta.text);
                   currentTurnHasOutput = true;
-                  // IM stream: forward non-subagent text delta
-                  imStreamCallback?.('delta', streamEvent.delta.text);
+                  // IM stream: forward non-subagent text delta (cross-turn guard)
+                  if (!imCallbackNulledDuringTurn) imStreamCallback?.('delta', streamEvent.delta.text);
                 } else {
                   console.log(`[agent] Filtered decorative text from stream (${decorativeCheck.reason})`);
                 }
@@ -4074,8 +4143,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             }
           }
         } else if (streamEvent.type === 'content_block_start') {
-          // IM stream: track text block indices (non-subagent only)
-          if (imStreamCallback && !sdkMessage.parent_tool_use_id) {
+          // IM stream: track text block indices (non-subagent only, cross-turn guard)
+          if (imStreamCallback && !sdkMessage.parent_tool_use_id && !imCallbackNulledDuringTurn) {
             if (streamEvent.content_block.type === 'text') {
               imTextBlockIndices.add(streamEvent.index);
             } else {
@@ -4220,8 +4289,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               toolId: toolId || undefined
             });
             handleContentBlockStop(streamEvent.index, toolId || undefined);
-            // IM stream: signal text block end
-            if (imStreamCallback && imTextBlockIndices.has(streamEvent.index)) {
+            // IM stream: signal text block end (cross-turn guard)
+            if (imStreamCallback && !imCallbackNulledDuringTurn && imTextBlockIndices.has(streamEvent.index)) {
               imStreamCallback('block-end', '');
               imTextBlockIndices.delete(streamEvent.index);
             }
@@ -4443,6 +4512,38 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             }
           }
         }
+
+        // Handle non-streamed text content from assistant messages.
+        // Some providers (OpenAI-compatible, third-party Anthropic proxies) return responses
+        // without streaming content_block_delta text events — the text only appears in the
+        // final assistant message. Without this, currentTurnHasOutput stays false and the
+        // result handler erroneously shows normal responses as agent-error banners.
+        // Skip error-wrapped messages (SDK sets "error" field on synthetic error responses)
+        // — these should be surfaced via the result handler's agent-error banner instead.
+        const isErrorWrapped = !!(sdkMessage as Record<string, unknown>).error;
+        if (!sdkMessage.parent_tool_use_id && !currentTurnHasOutput && !isErrorWrapped && assistantMessage.content) {
+          const nonStreamedParts: string[] = [];
+          for (const block of assistantMessage.content) {
+            if (
+              typeof block === 'object' &&
+              block !== null &&
+              'type' in block &&
+              block.type === 'text' &&
+              'text' in block
+            ) {
+              const text = String((block as { text: string }).text || '');
+              if (text) nonStreamedParts.push(text);
+            }
+          }
+          const nonStreamedText = nonStreamedParts.join('');
+          if (nonStreamedText) {
+            console.log(`[agent] Non-streamed assistant text detected (${nonStreamedText.length} chars), broadcasting as message-chunk`);
+            broadcast('chat:message-chunk', nonStreamedText);
+            appendTextChunk(nonStreamedText);
+            currentTurnHasOutput = true;
+            if (!imCallbackNulledDuringTurn) imStreamCallback?.('delta', nonStreamedText);
+          }
+        }
       } else if (sdkMessage.type === 'result') {
         // Extract token usage from result message
         // SDK result contains modelUsage (per-model stats) and/or usage (aggregate)
@@ -4495,15 +4596,23 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // Surface SDK-level errors that produced no assistant output (e.g. "Unknown skill: xxx").
         // These results have non-empty result text but no visible assistant text was streamed.
         // Without this, the user sees nothing — the message just silently completes.
-        // Always use chat:agent-error (banner) instead of chat:message-chunk, because
-        // message-chunk + message-complete fire in the same tick and React batching
-        // can swallow the streaming message before it renders.
+        // Only show agent-error for is_error results — non-error results from non-streaming
+        // providers are handled in the assistant message handler above.
         const resultText = resultMessage.result || '';
         if (resultText && !currentTurnHasOutput && !currentTurnToolCount) {
-          console.warn('[agent] SDK returned result with no API output, surfacing to user:', resultText);
-          broadcast('chat:agent-error', { message: resultText });
-          // Also forward to IM callback (prevents "(No Response)" for non-is_error SDK failures)
-          if (imStreamCallback) {
+          if (resultMessage.is_error) {
+            console.warn('[agent] SDK error result with no streamed output, showing as agent-error:', resultText);
+            broadcast('chat:agent-error', { message: resultText });
+          } else {
+            // Non-error result text that wasn't captured by streaming or assistant handler
+            // (safety net — should rarely trigger after the assistant handler fix above)
+            console.warn('[agent] SDK non-error result with no streamed output, showing as message:', resultText);
+            broadcast('chat:message-chunk', resultText);
+            appendTextChunk(resultText);
+          }
+          // Forward to IM callback (prevents "(No Response)" for SDK failures)
+          // Cross-turn guard: only forward if callback was not nulled/replaced
+          if (imStreamCallback && !imCallbackNulledDuringTurn) {
             imStreamCallback('complete', resultText);
             imStreamCallback = null;
           }
@@ -4678,6 +4787,21 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     }
     signalTurnComplete();
 
+    // 防御：确保 isStreamingMessage 在 session 退出时被重置。
+    // 正常路径由 handleMessageComplete/Stopped/Error 处理，但 subprocess
+    // 崩溃可能导致这些 handler 未执行，标志孤立为 true。
+    // 孤立的 true 会让所有新消息走 queue 路径（line 3350）且无人消费。
+    if (isStreamingMessage) {
+      console.warn('[agent] isStreamingMessage orphaned after session exit, resetting');
+      isStreamingMessage = false;
+    }
+
+    // Session 意外死亡时排空队列，通知前端清除 "排队中" UI。
+    // 不在主动 abort 时排空 — 调用方（resetSession/switchToSession 等）有自己的清理流程。
+    if (!wasPreWarming && !shouldAbortSession && messageQueue.length > 0) {
+      drainQueueWithCancellation();
+    }
+
     // 安全关闭 SDK session
     const session = querySession;
     querySession = null;
@@ -4711,9 +4835,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       if (!preWarmStartedOk || shouldAbortSession) {
         schedulePreWarm();
       }
-    } else if (!shouldAbortSession && sessionRegistered && sessionState !== 'error') {
-      // 非主动中止的意外退出（subprocess crash）→ 安排恢复
+    } else if (!shouldAbortSession && sessionRegistered) {
+      // 非主动中止的意外退出（subprocess crash / error）→ 安排恢复。
+      // 包含 sessionState === 'error' 的情况 — session 刚死，必须恢复，
+      // 否则用户再发消息时无可用 subprocess。
+      // Error 已通过 catch block 广播给前端（line 4702），用户已知出错。
       console.log('[agent] Unexpected session exit, scheduling recovery pre-warm');
+      preWarmFailCount = 0; // 新的故障上下文，重置重试计数
       schedulePreWarm();
     }
   }
@@ -4759,6 +4887,10 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     }
 
     // Yield 消息到 SDK stdin
+    // Reset cross-turn guard: this turn starts fresh, no timeout/replacement yet.
+    // Unlike a generation snapshot (which races with setImStreamCallback on the event loop),
+    // this flag is SET by setImStreamCallback itself, so ordering is guaranteed.
+    imCallbackNulledDuringTurn = false;
     isStreamingMessage = true;
     console.log(`[messageGenerator] Yielding message, wasQueued=${item.wasQueued}`);
     yield {

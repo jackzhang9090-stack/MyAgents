@@ -970,6 +970,10 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
   // eslint-disable-next-line react-hooks/exhaustive-deps -- toastRef/currentProviderRef/apiKeysRef/cronStateRef are refs (stable); scrollToBottom/setMessages/setIsLoading/setSessionState are stable
   }, [sessionState, isLoading, queuedMessages.length, startCronTask, sendMessage, permissionMode, selectedModel, scrollToBottom]);
 
+  // Ref-stabilize handleSendMessage for handleRetry (avoids frequent re-creation)
+  const handleSendMessageRef = useRef(handleSendMessage);
+  handleSendMessageRef.current = handleSendMessage;
+
   // Cancel a queued message and restore its text (and images if any) to the input box
   const handleCancelQueued = useCallback(async (queueId: string) => {
     // Snapshot the queued message info before it's removed (for image restore)
@@ -1120,6 +1124,65 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
         setIsLoading(false);
       });
   }, [rewindTarget, apiPost, setMessages, setIsLoading]);
+
+  // Retry = rewind to before user message + auto-resend
+  // Uses refs for messagesRef/toastRef/handleSendMessageRef — deps are all stable → reference stable
+  const handleRetry = useCallback((assistantMessageId: string) => {
+    const msgs = messagesRef.current;
+    const aIdx = msgs.findIndex(m => m.id === assistantMessageId);
+    if (aIdx < 0) return;
+
+    // Find the nearest user message before this assistant message
+    let userMsg: typeof msgs[number] | null = null;
+    for (let i = aIdx - 1; i >= 0; i--) {
+      if (msgs[i].role === 'user') { userMsg = msgs[i]; break; }
+    }
+    if (!userMsg) return;
+
+    const content = typeof userMsg.content === 'string' ? userMsg.content : '';
+    const attachments = userMsg.attachments;
+    const userMessageId = userMsg.id;
+
+    // 1. Optimistic UI: truncate to before user message
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.id === userMessageId);
+      return idx >= 0 ? prev.slice(0, idx) : prev;
+    });
+
+    // 2. Rewind + auto-resend
+    let resendFired = false;
+    setIsLoading(true);
+    setRewindStatus('rewinding');
+    apiPost('/chat/rewind', { userMessageId })
+      .then(res => {
+        const r = res as { success?: boolean; error?: string } | undefined;
+        if (r && !r.success) {
+          toastRef.current.error('重试失败：' + (r.error || '未知错误'));
+          return;
+        }
+        // Rewind succeeded → auto-resend the original message
+        resendFired = true;
+        const imageAttachments = attachments?.filter(a =>
+          a.isImage || a.mimeType?.startsWith('image/')
+        ).map(a => ({
+          id: a.id,
+          file: new File([], a.name),
+          preview: a.previewUrl || '',
+        }));
+        handleSendMessageRef.current(content, imageAttachments?.length ? imageAttachments : undefined);
+      })
+      .catch(err => {
+        console.error('[Chat] Retry failed:', err);
+        toastRef.current.error('重试失败');
+      })
+      .finally(() => {
+        setRewindStatus(null);
+        // Only clear loading on error — successful resend manages its own loading state
+        if (!resendFired) {
+          setIsLoading(false);
+        }
+      });
+  }, [apiPost, setMessages, setIsLoading]); // all stable — refs handle the rest
 
   // Handler for selecting a session from history dropdown
   const handleSelectSession = useCallback((id: string) => {
@@ -1315,6 +1378,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
               systemStatus={rewindStatus || systemStatus}
               isStreaming={isLoading || sessionState === 'running'}
               onRewind={handleRewind}
+              onRetry={handleRetry}
             />
           </FileActionProvider>
 

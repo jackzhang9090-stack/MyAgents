@@ -1,5 +1,5 @@
 import { Fragment, memo, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Copy, Check, Undo2 } from 'lucide-react';
+import { Copy, Check, Undo2, RotateCcw } from 'lucide-react';
 
 import AttachmentPreviewList from '@/components/AttachmentPreviewList';
 import BlockGroup from '@/components/BlockGroup';
@@ -8,11 +8,24 @@ import { useImagePreview } from '@/context/ImagePreviewContext';
 import type { ContentBlock, Message as MessageType } from '@/types/chat';
 import { SOURCE_LABELS, type MessageSource } from '../../shared/types/im';
 
+/** Lightweight CSS-only tooltip — appears instantly on hover, no JS timers. */
+function Tip({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <span className="group/tip relative inline-flex">
+      {children}
+      <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--ink)]/90 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity group-hover/tip:opacity-100">
+        {label}
+      </span>
+    </span>
+  );
+}
+
 interface MessageProps {
   message: MessageType;
   isLoading?: boolean;
   isStreaming?: boolean;       // AI 回复中时隐藏时间回溯按钮
   onRewind?: (messageId: string) => void;
+  onRetry?: (assistantMessageId: string) => void;
   /** Slot rendered after the BlockGroup containing ExitPlanMode tool */
   exitPlanModeSlot?: ReactNode;
 }
@@ -35,7 +48,7 @@ function areMessagesEqual(prev: MessageProps, next: MessageProps): boolean {
   if (prev.isStreaming !== next.isStreaming) return false;
   // exitPlanModeSlot — useMemo in MessageList keeps reference stable during streaming
   if (prev.exitPlanModeSlot !== next.exitPlanModeSlot) return false;
-  // onRewind 不比较 — 通过 Chat.tsx useCallback([]) + ref 保证稳定
+  // onRewind/onRetry 不比较 — 通过 Chat.tsx useCallback([]) + ref 保证稳定
 
   const prevMsg = prev.message;
   const nextMsg = next.message;
@@ -85,13 +98,73 @@ function formatLocalCommandOutput(content: string): string {
 }
 
 /**
+ * Extract plain text from assistant message content for clipboard copy.
+ * Only includes text blocks (excludes thinking/tool content).
+ */
+function extractAssistantText(content: MessageType['content']): string {
+  if (typeof content === 'string') return content;
+  return content
+    .filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
+    .map(b => b.text || '')
+    .join('\n\n');
+}
+
+/**
+ * Action bar for assistant messages: copy + retry.
+ * Always visible (not hover), left-aligned icon buttons.
+ */
+function AssistantActions({ message, onRetry, className = '' }: {
+  message: MessageType;
+  onRetry?: (id: string) => void;
+  className?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, []);
+
+  const text = extractAssistantText(message.content);
+
+  return (
+    <div className={`flex items-center gap-2 -ml-1 pt-1 ${className}`}>
+      <Tip label={copied ? '已复制' : '复制'}>
+        <button type="button"
+          aria-label="复制"
+          onClick={() => {
+            navigator.clipboard.writeText(text).catch(() => {});
+            setCopied(true);
+            if (timerRef.current) clearTimeout(timerRef.current);
+            timerRef.current = setTimeout(() => setCopied(false), 1500);
+          }}
+          className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]">
+          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+        </button>
+      </Tip>
+      {onRetry && (
+        <Tip label="重试">
+          <button type="button"
+            aria-label="重试"
+            onClick={() => onRetry(message.id)}
+            className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]">
+            <RotateCcw className="size-3.5" />
+          </button>
+        </Tip>
+      )}
+    </div>
+  );
+}
+
+/**
  * Message component with memo optimization.
  * History messages won't re-render when streaming message updates.
  */
-const Message = memo(function Message({ message, isLoading = false, isStreaming, onRewind, exitPlanModeSlot }: MessageProps) {
+const Message = memo(function Message({ message, isLoading = false, isStreaming, onRewind, onRetry, exitPlanModeSlot }: MessageProps) {
   const { openPreview } = useImagePreview();
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const [userHovered, setUserHovered] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -137,9 +210,10 @@ const Message = memo(function Message({ message, isLoading = false, isStreaming,
     const isImMessage = imSource && imSource !== 'desktop';
 
     return (
-      <div className="group/user relative flex justify-end px-1 select-none"
-           data-role="user" data-message-id={message.id}>
-        {/* 气泡 + 时间戳 */}
+      <div className="flex justify-end px-1 select-none"
+           data-role="user" data-message-id={message.id}
+           onMouseEnter={() => setUserHovered(true)}
+           onMouseLeave={() => setUserHovered(false)}>
         <div className="flex w-full flex-col items-end">
           {/* IM source indicator */}
           {isImMessage && (
@@ -152,7 +226,6 @@ const Message = memo(function Message({ message, isLoading = false, isStreaming,
             </div>
           )}
           <article className="relative w-fit max-w-[66%] rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-base leading-relaxed text-[var(--ink)] shadow-[var(--shadow-soft)] select-text">
-            {/* Images first (above text) - compact mode for 5 per row */}
             {hasAttachments && (
               <div className={hasText ? 'mb-2' : ''}>
                 <AttachmentPreviewList
@@ -162,46 +235,39 @@ const Message = memo(function Message({ message, isLoading = false, isStreaming,
                 />
               </div>
             )}
-            {/* Text below images */}
             {hasText && (
               <div className="text-[var(--ink)]">
                 <Markdown preserveNewlines>{userContent}</Markdown>
               </div>
             )}
           </article>
-          <span className="mr-2 mt-1 text-[11px] text-[var(--ink-muted)] opacity-0 transition-opacity group-hover/user:opacity-100">
-            {formatTimestamp(message.timestamp)}
-          </span>
-        </div>
-        {/* 右侧操作菜单 — hover 时淡入，绝对定位不占布局空间 */}
-        <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-full pl-1 flex flex-col items-center gap-0.5 opacity-0 transition-opacity group-hover/user:opacity-100">
-          <div className="group/copy relative">
-            <button type="button"
-              onClick={() => {
-                navigator.clipboard.writeText(userContent).catch(() => { /* clipboard unavailable */ });
-                setCopied(true);
-                if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
-                copiedTimerRef.current = setTimeout(() => setCopied(false), 1500);
-              }}
-              className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)] hover:shadow-sm">
-              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-            </button>
-            <span className="pointer-events-none absolute right-full top-1/2 mr-1 -translate-y-1/2 whitespace-nowrap rounded-md bg-[var(--paper)] px-2 py-1 text-[11px] text-[var(--ink-muted)] shadow-md border border-[var(--line)] opacity-0 transition-opacity group-hover/copy:opacity-100">
-              {copied ? '已复制' : '复制'}
-            </span>
-          </div>
-          {!isStreaming && onRewind && (
-            <div className="group/rewind relative">
+          {/* 操作栏：时间 + 图标按钮，hover 淡入 */}
+          <div className={`mr-2 mt-1 flex items-center gap-2 transition-opacity ${userHovered ? 'opacity-100' : 'opacity-0'}`}>
+            <span className="text-[11px] text-[var(--ink-muted)] mr-1">{formatTimestamp(message.timestamp)}</span>
+            {!isStreaming && onRewind && (
+              <Tip label="时间回溯">
+                <button type="button"
+                  aria-label="时间回溯"
+                  onClick={() => onRewind(message.id)}
+                  className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]">
+                  <Undo2 className="size-3.5" />
+                </button>
+              </Tip>
+            )}
+            <Tip label={copied ? '已复制' : '复制'}>
               <button type="button"
-                onClick={() => onRewind(message.id)}
-                className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)] hover:shadow-sm">
-                <Undo2 className="size-3.5" />
+                aria-label="复制"
+                onClick={() => {
+                  navigator.clipboard.writeText(userContent).catch(() => {});
+                  setCopied(true);
+                  if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+                  copiedTimerRef.current = setTimeout(() => setCopied(false), 1500);
+                }}
+                className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]">
+                {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
               </button>
-              <span className="pointer-events-none absolute right-full top-1/2 mr-1 -translate-y-1/2 whitespace-nowrap rounded-md bg-[var(--paper)] px-2 py-1 text-[11px] text-[var(--ink-muted)] shadow-md border border-[var(--line)] opacity-0 transition-opacity group-hover/rewind:opacity-100">
-                时间回溯
-              </span>
-            </div>
-          )}
+            </Tip>
+          </div>
         </div>
       </div>
     );
@@ -211,8 +277,11 @@ const Message = memo(function Message({ message, isLoading = false, isStreaming,
   if (typeof message.content === 'string') {
     return (
       <div className="flex justify-start w-full px-4 py-2 select-none">
-        <div className="w-full max-w-none text-[var(--ink)] select-text">
-          <Markdown>{message.content}</Markdown>
+        <div className="w-full max-w-none">
+          <div className="text-[var(--ink)] select-text">
+            <Markdown>{message.content}</Markdown>
+          </div>
+          {!isStreaming && <AssistantActions message={message} onRetry={onRetry} />}
         </div>
       </div>
     );
@@ -284,48 +353,51 @@ const Message = memo(function Message({ message, isLoading = false, isStreaming,
 
   return (
     <div className="flex justify-start select-none">
-      <article className="w-full px-3 py-2">
-        <div className="space-y-3">
-          {groupedBlocks.map((item, index) => {
-            // Single text block
-            if (!Array.isArray(item)) {
-              if (item.type === 'text' && item.text) {
-                return (
-                  <div
-                    key={index}
-                    className="flex justify-start w-full px-1 py-1 select-none"
-                  >
-                    <div className="w-full max-w-none text-[var(--ink)] select-text">
-                      <Markdown>{item.text}</Markdown>
+      <div className="w-full">
+        <article className="w-full px-3 py-2">
+          <div className="space-y-3">
+            {groupedBlocks.map((item, index) => {
+              // Single text block
+              if (!Array.isArray(item)) {
+                if (item.type === 'text' && item.text) {
+                  return (
+                    <div
+                      key={index}
+                      className="flex justify-start w-full px-1 py-1 select-none"
+                    >
+                      <div className="w-full max-w-none text-[var(--ink)] select-text">
+                        <Markdown>{item.text}</Markdown>
+                      </div>
                     </div>
-                  </div>
-                );
+                  );
+                }
+                return null;
               }
-              return null;
-            }
 
-            // Group of thinking/tool blocks
-            const isLatestActiveSection = index === lastBlockGroupIndex;
-            const hasTextAfter =
-              index < groupedBlocks.length - 1 &&
-              groupedBlocks
-                .slice(index + 1)
-                .some((nextItem) => !Array.isArray(nextItem) && nextItem.type === 'text');
+              // Group of thinking/tool blocks
+              const isLatestActiveSection = index === lastBlockGroupIndex;
+              const hasTextAfter =
+                index < groupedBlocks.length - 1 &&
+                groupedBlocks
+                  .slice(index + 1)
+                  .some((nextItem) => !Array.isArray(nextItem) && nextItem.type === 'text');
 
-            return (
-              <Fragment key={`group-${index}`}>
-                <BlockGroup
-                  blocks={item}
-                  isLatestActiveSection={isLatestActiveSection}
-                  isStreaming={isAssistantStreaming}
-                  hasTextAfter={hasTextAfter}
-                />
-                {index === exitPlanModeGroupIndex && exitPlanModeSlot}
-              </Fragment>
-            );
-          })}
-        </div>
-      </article>
+              return (
+                <Fragment key={`group-${index}`}>
+                  <BlockGroup
+                    blocks={item}
+                    isLatestActiveSection={isLatestActiveSection}
+                    isStreaming={isAssistantStreaming}
+                    hasTextAfter={hasTextAfter}
+                  />
+                  {index === exitPlanModeGroupIndex && exitPlanModeSlot}
+                </Fragment>
+              );
+            })}
+          </div>
+        </article>
+        {!isStreaming && <AssistantActions className="px-4" message={message} onRetry={onRetry} />}
+      </div>
     </div>
   );
 }, areMessagesEqual);

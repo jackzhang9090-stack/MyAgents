@@ -1,4 +1,4 @@
-import { Check, Download, FolderOpen, KeyRound, Loader2, Plus, RefreshCw, Trash2, X, AlertCircle, Globe, ExternalLink as ExternalLinkIcon, Settings2 } from 'lucide-react';
+import { Check, Download, FolderOpen, KeyRound, Loader2, Plus, RefreshCw, Square, Trash2, X, AlertCircle, Globe, ExternalLink as ExternalLinkIcon, Settings2 } from 'lucide-react';
 import { ExternalLink } from '@/components/ExternalLink';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
@@ -137,6 +137,8 @@ interface ProviderEditForm {
 interface SettingsProps {
     /** Initial section to display (e.g., 'providers') */
     initialSection?: string;
+    /** MCP server ID to auto-open config dialog for */
+    initialMcpId?: string;
     /** Callback when section changes (to clear initialSection) */
     onSectionChange?: () => void;
     /** Whether this tab is currently active/visible */
@@ -241,7 +243,10 @@ async function getPlaywrightDefaultArgs(): Promise<string[]> {
     return [`--user-data-dir=${profilePath}`];
 }
 
-export default function Settings({ initialSection, onSectionChange, isActive, updateReady: propUpdateReady, updateVersion: propUpdateVersion, updateChecking, updateDownloading, onCheckForUpdate, onRestartAndUpdate }: SettingsProps) {
+/** Playwright device presets shared between parser and UI */
+const PLAYWRIGHT_DEVICE_PRESETS = ['iPhone 15 Pro', 'iPhone 15', 'iPhone SE', 'iPad Pro 11', 'Pixel 7', 'Galaxy S23'];
+
+export default function Settings({ initialSection, initialMcpId, onSectionChange, isActive, updateReady: propUpdateReady, updateVersion: propUpdateVersion, updateChecking, updateDownloading, onCheckForUpdate, onRestartAndUpdate }: SettingsProps) {
     const {
         apiKeys,
         saveApiKey,
@@ -522,6 +527,9 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
         }));
     }, [runtimeDialog, appVersion, providers, apiKeys, providerVerifyStatus]);
 
+    // Track which MCP servers need configuration (missing required fields)
+    const [mcpNeedsConfig, setMcpNeedsConfig] = useState<Record<string, boolean>>({});
+
     // Builtin MCP settings dialog state
     const [builtinMcpSettings, setBuiltinMcpSettings] = useState<{
         server: McpServerDefinition;
@@ -529,6 +537,46 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
         newArg: string;
         env: Record<string, string>;
         newEnvKey: string;
+    } | null>(null);
+
+    // Gemini Image MCP custom settings dialog
+    const [geminiImageSettings, setGeminiImageSettings] = useState<{
+        apiKey: string;
+        baseUrl: string;
+        model: string;
+        aspectRatio: string;
+        imageSize: string;
+        thinkingLevel: string;
+        searchGrounding: boolean;
+        maxContextTurns: number;
+        saveToProject: boolean;
+    } | null>(null);
+
+    // Edge TTS slider styling (custom range input with accent-colored thumb)
+    const ttsSliderClass = 'w-full h-1.5 rounded-full appearance-none cursor-pointer bg-[var(--line)] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[var(--accent)] [&::-webkit-slider-thumb]:shadow-md [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:hover:scale-110';
+
+    // Edge TTS MCP custom settings dialog
+    const [edgeTtsSettings, setEdgeTtsSettings] = useState<{
+        defaultVoice: string;
+        defaultRate: number;
+        defaultVolume: number;
+        defaultPitch: number;
+        defaultOutputFormat: string;
+    } | null>(null);
+    const [ttsPreviewText, setTtsPreviewText] = useState('你好，这是一段语音合成测试。Hello, this is a text-to-speech test.');
+    const [ttsPreviewLoading, setTtsPreviewLoading] = useState(false);
+    const [ttsPreviewPlaying, setTtsPreviewPlaying] = useState(false);
+    const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+
+    // Playwright MCP custom settings dialog
+    const [playwrightSettings, setPlaywrightSettings] = useState<{
+        headless: boolean;
+        browser: string;
+        device: string;
+        customDevice: string;
+        userDataDir: string;
+        extraArgs: string[];
+        newArg: string;
     } | null>(null);
 
     const [mcpFormMode, setMcpFormMode] = useState<'form' | 'json'>('form');
@@ -561,6 +609,19 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
         newHeaderKey: '',
     });
 
+    // Check which MCP servers need configuration (missing required fields)
+    const checkMcpConfigStatus = async (servers: McpServerDefinition[]) => {
+        const needs: Record<string, boolean> = {};
+        for (const server of servers) {
+            if (server.requiresConfig && server.requiresConfig.length > 0) {
+                const savedEnv = await getMcpServerEnv(server.id);
+                const missing = server.requiresConfig.some(key => !savedEnv?.[key]?.trim());
+                if (missing) needs[server.id] = true;
+            }
+        }
+        setMcpNeedsConfig(needs);
+    };
+
     // Load MCP config on mount
     useEffect(() => {
         const loadMcp = async () => {
@@ -569,6 +630,7 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                 const enabledIds = await getEnabledMcpServerIds();
                 setMcpServersState(servers);
                 setMcpEnabledIds(enabledIds);
+                await checkMcpConfigStatus(servers);
             } catch (err) {
                 console.error('[Settings] Failed to load MCP config:', err);
             }
@@ -591,6 +653,7 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                 const enabledIds = await getEnabledMcpServerIds();
                 setMcpServersState(servers);
                 setMcpEnabledIds(enabledIds);
+                await checkMcpConfigStatus(servers);
             } catch (err) {
                 console.warn('[Settings] Failed to reload MCP servers on activation:', err);
             }
@@ -607,6 +670,18 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
             setMcpEnabledIds(prev => prev.filter(id => id !== server.id));
             toast.success('MCP 已禁用');
             return;
+        }
+
+        // Validate required config before enabling (e.g., API keys)
+        if (server.requiresConfig && server.requiresConfig.length > 0) {
+            const savedEnv = await getMcpServerEnv(server.id);
+            const missingKeys = server.requiresConfig.filter(key => !savedEnv?.[key]?.trim());
+            if (missingKeys.length > 0) {
+                toast.error(`请先配置 ${server.name}（点击 ⚙️ 设置）`);
+                // Auto-open settings dialog for convenience
+                handleEditBuiltinMcp(server);
+                return;
+            }
         }
 
         // Set loading state
@@ -676,22 +751,84 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
 
     // Edit builtin MCP server settings (extra args + env)
     const handleEditBuiltinMcp = async (server: McpServerDefinition) => {
+        // Edge TTS: open custom config dialog
+        if (server.id === 'edge-tts') {
+            const savedEnv = await getMcpServerEnv(server.id);
+            const parseRate = (s?: string) => parseInt((s || '0%').replace('%', ''), 10) || 0;
+            const parsePitch = (s?: string) => parseInt((s || '+0Hz').replace('Hz', '').replace('+', ''), 10) || 0;
+            setEdgeTtsSettings({
+                defaultVoice: savedEnv?.EDGE_TTS_DEFAULT_VOICE || 'zh-CN-XiaoxiaoNeural',
+                defaultRate: parseRate(savedEnv?.EDGE_TTS_DEFAULT_RATE),
+                defaultVolume: parseRate(savedEnv?.EDGE_TTS_DEFAULT_VOLUME),
+                defaultPitch: parsePitch(savedEnv?.EDGE_TTS_DEFAULT_PITCH),
+                defaultOutputFormat: savedEnv?.EDGE_TTS_DEFAULT_FORMAT || 'audio-24khz-48kbitrate-mono-mp3',
+            });
+            stopTtsPreview();
+            return;
+        }
+
+        // Gemini Image: open custom config dialog
+        if (server.id === 'gemini-image') {
+            const savedEnv = await getMcpServerEnv(server.id);
+            setGeminiImageSettings({
+                apiKey: savedEnv?.GEMINI_API_KEY || '',
+                baseUrl: savedEnv?.GEMINI_BASE_URL || '',
+                model: savedEnv?.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image',
+                aspectRatio: savedEnv?.GEMINI_DEFAULT_ASPECT_RATIO || 'auto',
+                imageSize: savedEnv?.GEMINI_DEFAULT_IMAGE_SIZE || 'auto',
+                thinkingLevel: savedEnv?.GEMINI_THINKING_LEVEL || 'auto',
+                searchGrounding: savedEnv?.GEMINI_SEARCH_GROUNDING === 'true',
+                maxContextTurns: parseInt(savedEnv?.MAX_CONTEXT_TURNS || '20', 10),
+                saveToProject: savedEnv?.SAVE_TO_PROJECT !== 'false',
+            });
+            return;
+        }
+
+        // Playwright: open custom config dialog
+        if (server.id === 'playwright') {
+            const savedArgs = await getMcpServerArgs(server.id);
+            let rawArgs: string[];
+            if (savedArgs !== undefined) {
+                rawArgs = savedArgs;
+            } else {
+                try { rawArgs = await getPlaywrightDefaultArgs(); } catch { rawArgs = []; }
+            }
+
+            let headless = false;
+            let browser = '';
+            let device = '';
+            let customDevice = '';
+            let userDataDir = '';
+            const extraArgs: string[] = [];
+
+            for (const arg of rawArgs) {
+                if (arg === '--headless') {
+                    headless = true;
+                } else if (arg.startsWith('--browser=')) {
+                    browser = arg.slice('--browser='.length);
+                } else if (arg.startsWith('--device=')) {
+                    const val = arg.slice('--device='.length);
+                    if (PLAYWRIGHT_DEVICE_PRESETS.includes(val)) {
+                        device = val;
+                    } else {
+                        device = '__custom__';
+                        customDevice = val;
+                    }
+                } else if (arg.startsWith('--user-data-dir=')) {
+                    userDataDir = arg.slice('--user-data-dir='.length);
+                } else {
+                    extraArgs.push(arg);
+                }
+            }
+
+            setPlaywrightSettings({ headless, browser, device, customDevice, userDataDir, extraArgs, newArg: '' });
+            return;
+        }
+
         const savedArgs = await getMcpServerArgs(server.id);
         const savedEnv = await getMcpServerEnv(server.id);
 
-        let extraArgs: string[];
-        if (savedArgs !== undefined) {
-            extraArgs = savedArgs;
-        } else if (server.id === 'playwright') {
-            // Playwright-specific default: persistent browser profile
-            try {
-                extraArgs = await getPlaywrightDefaultArgs();
-            } catch {
-                extraArgs = [];
-            }
-        } else {
-            extraArgs = [];
-        }
+        const extraArgs = savedArgs ?? [];
 
         setBuiltinMcpSettings({
             server,
@@ -720,6 +857,175 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
         }
     };
 
+    const handleSaveGeminiImage = async () => {
+        if (!geminiImageSettings) return;
+        try {
+            const env: Record<string, string> = {
+                GEMINI_API_KEY: geminiImageSettings.apiKey,
+                GEMINI_BASE_URL: geminiImageSettings.baseUrl,
+                GEMINI_IMAGE_MODEL: geminiImageSettings.model,
+                GEMINI_DEFAULT_ASPECT_RATIO: geminiImageSettings.aspectRatio,
+                GEMINI_DEFAULT_IMAGE_SIZE: geminiImageSettings.imageSize,
+                GEMINI_THINKING_LEVEL: geminiImageSettings.thinkingLevel,
+                GEMINI_SEARCH_GROUNDING: geminiImageSettings.searchGrounding ? 'true' : 'false',
+                MAX_CONTEXT_TURNS: String(geminiImageSettings.maxContextTurns),
+                SAVE_TO_PROJECT: geminiImageSettings.saveToProject ? 'true' : 'false',
+            };
+            await atomicModifyConfig(config => ({
+                ...config,
+                mcpServerEnv: { ...(config.mcpServerEnv ?? {}), 'gemini-image': env },
+            }));
+            const servers = await getAllMcpServers();
+            setMcpServersState(servers);
+            await checkMcpConfigStatus(servers);
+            setGeminiImageSettings(null);
+            toast.success('Gemini 图片生成设置已保存');
+        } catch {
+            toast.error('保存失败');
+        }
+    };
+
+    const handleSavePlaywright = async () => {
+        if (!playwrightSettings) return;
+        try {
+            const args: string[] = [];
+            if (playwrightSettings.userDataDir.trim()) {
+                args.push(`--user-data-dir=${playwrightSettings.userDataDir.trim()}`);
+            }
+            if (playwrightSettings.headless) {
+                args.push('--headless');
+            }
+            if (playwrightSettings.browser) {
+                args.push(`--browser=${playwrightSettings.browser}`);
+            }
+            if (playwrightSettings.device) {
+                const deviceName = playwrightSettings.device === '__custom__'
+                    ? playwrightSettings.customDevice.trim()
+                    : playwrightSettings.device;
+                if (deviceName) {
+                    args.push(`--device=${deviceName}`);
+                }
+            }
+            args.push(...playwrightSettings.extraArgs);
+
+            await atomicModifyConfig(config => ({
+                ...config,
+                mcpServerArgs: { ...(config.mcpServerArgs ?? {}), playwright: args },
+            }));
+            const servers = await getAllMcpServers();
+            setMcpServersState(servers);
+            setPlaywrightSettings(null);
+            toast.success('Playwright 设置已保存');
+        } catch {
+            toast.error('保存失败');
+        }
+    };
+
+    const fmtTtsRate = (v: number) => v >= 0 ? `+${v}%` : `${v}%`;
+    const fmtTtsPitch = (v: number) => v >= 0 ? `+${v}Hz` : `${v}Hz`;
+
+    const handleSaveEdgeTts = async () => {
+        if (!edgeTtsSettings) return;
+        try {
+            const env: Record<string, string> = {
+                EDGE_TTS_DEFAULT_VOICE: edgeTtsSettings.defaultVoice,
+                EDGE_TTS_DEFAULT_RATE: fmtTtsRate(edgeTtsSettings.defaultRate),
+                EDGE_TTS_DEFAULT_VOLUME: fmtTtsRate(edgeTtsSettings.defaultVolume),
+                EDGE_TTS_DEFAULT_PITCH: fmtTtsPitch(edgeTtsSettings.defaultPitch),
+                EDGE_TTS_DEFAULT_FORMAT: edgeTtsSettings.defaultOutputFormat,
+            };
+            await atomicModifyConfig(config => ({
+                ...config,
+                mcpServerEnv: { ...(config.mcpServerEnv ?? {}), 'edge-tts': env },
+            }));
+            const servers = await getAllMcpServers();
+            setMcpServersState(servers);
+            await checkMcpConfigStatus(servers);
+            setEdgeTtsSettings(null);
+            toast.success('Edge TTS 设置已保存');
+        } catch {
+            toast.error('保存失败');
+        }
+    };
+
+    const stopTtsPreview = useCallback(() => {
+        if (ttsAudioRef.current) {
+            const src = ttsAudioRef.current.src;
+            ttsAudioRef.current.pause();
+            ttsAudioRef.current.onended = null;
+            ttsAudioRef.current.onerror = null;
+            ttsAudioRef.current = null;
+            if (src.startsWith('blob:')) URL.revokeObjectURL(src);
+        }
+        setTtsPreviewPlaying(false);
+    }, []);
+
+    // Stop audio when dialog closes or component unmounts
+    useEffect(() => {
+        if (!edgeTtsSettings) stopTtsPreview();
+        return () => { stopTtsPreview(); };
+    }, [edgeTtsSettings, stopTtsPreview]);
+
+    const handlePreviewTts = async () => {
+        if (!edgeTtsSettings) return;
+
+        // If currently playing, stop
+        if (ttsPreviewPlaying) {
+            stopTtsPreview();
+            return;
+        }
+
+        setTtsPreviewLoading(true);
+        try {
+            const result = await apiPostJson<{ success: boolean; audioBase64?: string; mimeType?: string; error?: string }>('/api/edge-tts/preview', {
+                text: ttsPreviewText,
+                voice: edgeTtsSettings.defaultVoice,
+                rate: fmtTtsRate(edgeTtsSettings.defaultRate),
+                volume: fmtTtsRate(edgeTtsSettings.defaultVolume),
+                pitch: fmtTtsPitch(edgeTtsSettings.defaultPitch),
+                outputFormat: edgeTtsSettings.defaultOutputFormat,
+            });
+            if (result.success && result.audioBase64) {
+                // Decode base64 → Blob URL (data URIs don't work for audio in WKWebView)
+                const bin = atob(result.audioBase64);
+                const bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                const blob = new Blob([bytes], { type: result.mimeType || 'audio/mpeg' });
+                const blobUrl = URL.createObjectURL(blob);
+
+                const audio = new Audio(blobUrl);
+                ttsAudioRef.current = audio;
+                audio.onended = () => {
+                    URL.revokeObjectURL(blobUrl);
+                    setTtsPreviewPlaying(false);
+                    ttsAudioRef.current = null;
+                };
+                audio.onerror = () => {
+                    URL.revokeObjectURL(blobUrl);
+                    toast.error('音频播放失败');
+                    setTtsPreviewPlaying(false);
+                    ttsAudioRef.current = null;
+                };
+                await audio.play();
+                setTtsPreviewPlaying(true);
+            } else {
+                toast.error(result.error || '试听失败');
+            }
+        } catch {
+            // Clean up blob URL on play() rejection to avoid memory leak
+            if (ttsAudioRef.current) {
+                const src = ttsAudioRef.current.src;
+                ttsAudioRef.current.onended = null;
+                ttsAudioRef.current.onerror = null;
+                ttsAudioRef.current = null;
+                if (src.startsWith('blob:')) URL.revokeObjectURL(src);
+            }
+            toast.error('试听请求失败');
+        } finally {
+            setTtsPreviewLoading(false);
+        }
+    };
+
     // Edit custom MCP server - populate form and open modal
     const handleEditMcp = (server: McpServerDefinition) => {
         setMcpForm({
@@ -738,6 +1044,22 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
         setEditingMcpId(server.id);
         setShowMcpForm(true);
     };
+
+    // Auto-open MCP config dialog when initialMcpId is provided (from Chat tool popup)
+    useEffect(() => {
+        if (!initialMcpId || mcpServers.length === 0) return;
+        const server = mcpServers.find(s => s.id === initialMcpId);
+        if (server) {
+            if (server.isBuiltin) {
+                void handleEditBuiltinMcp(server);
+            } else {
+                handleEditMcp(server);
+            }
+        }
+        // Clear parent state so the same ID can be dispatched again
+        onSectionChangeRef.current?.();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally only triggers on initialMcpId change
+    }, [initialMcpId, mcpServers]);
 
     // Add custom MCP server - auto-install after adding
     const handleAddMcp = async () => {
@@ -1763,8 +2085,13 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                                                     <Globe className="h-4 w-4 shrink-0 text-[var(--accent-warm)]/70" />
                                                     <h3 className="truncate font-semibold text-[var(--ink)]">{server.name}</h3>
                                                     {server.isBuiltin && (
-                                                        <span className="shrink-0 rounded bg-[var(--info-bg)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--info)]">
+                                                        <span className="shrink-0 rounded-full border border-[var(--info)]/20 bg-[var(--info-bg)] px-2 py-0.5 text-[10px] font-medium text-[var(--info)]">
                                                             预设
+                                                        </span>
+                                                    )}
+                                                    {server.isFree && (
+                                                        <span className="shrink-0 rounded-full border border-[var(--success)]/20 bg-[var(--success-bg)] px-2 py-0.5 text-[10px] font-medium text-[var(--success)]">
+                                                            免费
                                                         </span>
                                                     )}
                                                     {/* Status indicator */}
@@ -1777,9 +2104,16 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                                                         {server.description}
                                                     </p>
                                                 )}
-                                                <p className="mt-2 truncate font-mono text-[10px] text-[var(--ink-muted)]">
-                                                    {server.command} {server.args?.join(' ')}
-                                                </p>
+                                                {mcpNeedsConfig[server.id] && (
+                                                    <p className="mt-1 text-xs text-[var(--warning)]">
+                                                        ⚠️ 需要配置 API Key
+                                                    </p>
+                                                )}
+                                                {server.command !== '__builtin__' && (
+                                                    <p className="mt-2 truncate font-mono text-[10px] text-[var(--ink-muted)]">
+                                                        {server.command} {server.args?.join(' ')}
+                                                    </p>
+                                                )}
                                             </div>
                                             <div className="flex shrink-0 items-center gap-2">
                                                 <button
@@ -2566,6 +2900,638 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                             </button>
                             <button
                                 onClick={handleSaveBuiltinMcp}
+                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent)]/90"
+                            >
+                                保存
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Gemini Image Settings Modal */}
+            {geminiImageSettings && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
+                    <div className="mx-4 w-full max-w-lg rounded-2xl bg-[var(--paper-elevated)] shadow-xl max-h-[85vh] flex flex-col">
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--line)]">
+                            <h2 className="text-lg font-semibold text-[var(--ink)]">Gemini 图片生成 设置</h2>
+                            <button onClick={() => setGeminiImageSettings(null)} className="rounded-lg p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-contrast)]">
+                                <X className="h-5 w-5" />
+                            </button>
+                        </div>
+
+                        {/* Content */}
+                        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
+                            {/* API Key */}
+                            <div>
+                                <label className="block text-xs font-medium text-[var(--ink-muted)] mb-1">API Key *</label>
+                                <input
+                                    type="password"
+                                    value={geminiImageSettings.apiKey}
+                                    onChange={e => setGeminiImageSettings(prev => prev ? { ...prev, apiKey: e.target.value } : null)}
+                                    placeholder="AIzaSy..."
+                                    className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-xs text-[var(--ink)] placeholder-[var(--ink-muted)]/50 outline-none focus:border-[var(--accent)] font-mono"
+                                />
+                                <p className="mt-1 text-[10px] text-[var(--ink-muted)]">
+                                    从 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="text-[var(--accent)] hover:underline">aistudio.google.com</a> 免费获取
+                                </p>
+                            </div>
+
+                            {/* Base URL */}
+                            <div>
+                                <label className="block text-xs font-medium text-[var(--ink-muted)] mb-1">API Base URL</label>
+                                <input
+                                    type="text"
+                                    value={geminiImageSettings.baseUrl}
+                                    onChange={e => setGeminiImageSettings(prev => prev ? { ...prev, baseUrl: e.target.value } : null)}
+                                    placeholder="留空使用官方端点"
+                                    className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-xs text-[var(--ink)] placeholder-[var(--ink-muted)]/50 outline-none focus:border-[var(--accent)] font-mono"
+                                />
+                                <p className="mt-1 text-[10px] text-[var(--ink-muted)]">留空使用官方端点。支持兼容 Gemini 原生协议的第三方中转</p>
+                            </div>
+
+                            {/* Model */}
+                            <div>
+                                <label className="block text-xs font-medium text-[var(--ink-muted)] mb-2">模型</label>
+                                <div className="flex flex-wrap gap-2">
+                                    {[
+                                        { id: 'gemini-2.5-flash-image', label: 'Nano Banana', desc: 'Stable · 速度快 · 免费额度多' },
+                                        { id: 'gemini-3-pro-image-preview', label: 'Nano Banana Pro', desc: 'Preview · 质量最高 · 文字渲染最佳' },
+                                        { id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana 2', desc: 'Preview · 速度+质量平衡（推荐）' },
+                                    ].map(m => (
+                                        <button
+                                            key={m.id}
+                                            onClick={() => setGeminiImageSettings(prev => prev ? { ...prev, model: m.id } : null)}
+                                            className={`rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
+                                                geminiImageSettings.model === m.id
+                                                    ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]'
+                                                    : 'border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--ink-muted)]'
+                                            }`}
+                                        >
+                                            <div className="font-medium">{m.label}</div>
+                                            <div className="text-[10px] opacity-70">{m.desc}</div>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Aspect Ratio */}
+                            <div>
+                                <label className="block text-xs font-medium text-[var(--ink-muted)] mb-2">默认宽高比</label>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {['auto', '1:1', '3:4', '4:3', '9:16', '16:9', '2:3', '3:2', '4:5', '5:4', '21:9'].map(r => (
+                                        <button
+                                            key={r}
+                                            onClick={() => setGeminiImageSettings(prev => prev ? { ...prev, aspectRatio: r } : null)}
+                                            className={`rounded-md px-2.5 py-1 text-xs transition-colors ${r !== 'auto' ? 'font-mono' : ''} ${
+                                                geminiImageSettings.aspectRatio === r
+                                                    ? 'bg-[var(--accent)] text-white'
+                                                    : 'bg-[var(--paper-contrast)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                                            }`}
+                                        >
+                                            {r === 'auto' ? '自动' : r}
+                                        </button>
+                                    ))}
+                                </div>
+                                <p className="mt-1 text-[10px] text-[var(--ink-muted)]">自动 = 不传参数，由模型决定（默认 1:1）</p>
+                            </div>
+
+                            {/* Resolution */}
+                            <div>
+                                <label className="block text-xs font-medium text-[var(--ink-muted)] mb-2">默认分辨率</label>
+                                <div className="flex gap-2">
+                                    {['auto', '1K', '2K', '4K'].map(s => (
+                                        <button
+                                            key={s}
+                                            onClick={() => setGeminiImageSettings(prev => prev ? { ...prev, imageSize: s } : null)}
+                                            className={`rounded-md px-3 py-1.5 text-xs transition-colors ${
+                                                geminiImageSettings.imageSize === s
+                                                    ? 'bg-[var(--accent)] text-white'
+                                                    : 'bg-[var(--paper-contrast)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                                            }`}
+                                        >
+                                            {s === 'auto' ? '自动' : s}
+                                        </button>
+                                    ))}
+                                </div>
+                                <p className="mt-1 text-[10px] text-[var(--ink-muted)]">自动 = 不传参数，由模型决定（默认 1K）</p>
+                            </div>
+
+                            {/* Advanced Section Divider */}
+                            <div className="border-t border-[var(--line)] pt-4">
+                                <span className="text-xs font-medium text-[var(--ink-muted)]">高级设置</span>
+                            </div>
+
+                            {/* Thinking Level */}
+                            <div>
+                                <label className="block text-xs font-medium text-[var(--ink-muted)] mb-2">推理深度</label>
+                                <div className="flex gap-2">
+                                    {[
+                                        { id: 'auto', label: '自动', desc: '不传参数 · 由模型决定' },
+                                        { id: 'minimal', label: '快速', desc: '速度优先（模型默认值）' },
+                                        { id: 'high', label: '高质量', desc: '推理更深 · 生成更精细但更慢' },
+                                    ].map(t => (
+                                        <button
+                                            key={t.id}
+                                            onClick={() => setGeminiImageSettings(prev => prev ? { ...prev, thinkingLevel: t.id } : null)}
+                                            className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${
+                                                geminiImageSettings.thinkingLevel === t.id
+                                                    ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]'
+                                                    : 'border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--ink-muted)]'
+                                            }`}
+                                        >
+                                            {t.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Search Grounding */}
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <div className="text-xs font-medium text-[var(--ink)]">搜索增强</div>
+                                    <div className="text-[10px] text-[var(--ink-muted)]">生成前搜索 Google 获取实时信息（人物、事件、天气等）</div>
+                                </div>
+                                <button
+                                    onClick={() => setGeminiImageSettings(prev => prev ? { ...prev, searchGrounding: !prev.searchGrounding } : null)}
+                                    className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
+                                        geminiImageSettings.searchGrounding ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
+                                    }`}
+                                >
+                                    <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                                        geminiImageSettings.searchGrounding ? 'translate-x-5' : 'translate-x-0'
+                                    }`} />
+                                </button>
+                            </div>
+
+                            {/* Max Context Turns */}
+                            <div>
+                                <label className="block text-xs font-medium text-[var(--ink-muted)] mb-1">单次图片会话最大编辑轮次</label>
+                                <input
+                                    type="number"
+                                    min={2}
+                                    max={50}
+                                    value={geminiImageSettings.maxContextTurns}
+                                    onChange={e => setGeminiImageSettings(prev => prev ? { ...prev, maxContextTurns: parseInt(e.target.value, 10) || 20 } : null)}
+                                    className="w-20 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-1.5 text-xs text-[var(--ink)] outline-none focus:border-[var(--accent)]"
+                                />
+                                <p className="mt-1 text-[10px] text-[var(--ink-muted)]">超过后自动开始新会话（防止请求体过大）</p>
+                            </div>
+
+                            {/* Save to Project */}
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <div className="text-xs font-medium text-[var(--ink)]">保存图片到项目目录</div>
+                                    <div className="text-[10px] text-[var(--ink-muted)]">保存副本到项目 .myagents-images/ 目录</div>
+                                </div>
+                                <button
+                                    onClick={() => setGeminiImageSettings(prev => prev ? { ...prev, saveToProject: !prev.saveToProject } : null)}
+                                    className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
+                                        geminiImageSettings.saveToProject ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
+                                    }`}
+                                >
+                                    <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                                        geminiImageSettings.saveToProject ? 'translate-x-5' : 'translate-x-0'
+                                    }`} />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Footer */}
+                        <div className="flex justify-end gap-3 border-t border-[var(--line)] px-6 py-4">
+                            <button
+                                onClick={() => setGeminiImageSettings(null)}
+                                className="rounded-lg px-4 py-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--paper-contrast)]"
+                            >
+                                取消
+                            </button>
+                            <button
+                                onClick={handleSaveGeminiImage}
+                                disabled={!geminiImageSettings.apiKey.trim()}
+                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent)]/90 disabled:opacity-40"
+                            >
+                                保存
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Playwright Settings Modal */}
+            {playwrightSettings && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
+                    <div className="mx-4 w-full max-w-lg rounded-2xl bg-[var(--paper-elevated)] shadow-xl max-h-[85vh] flex flex-col">
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--line)]">
+                            <h2 className="text-lg font-semibold text-[var(--ink)]">Playwright 浏览器设置</h2>
+                            <button onClick={() => setPlaywrightSettings(null)} className="rounded-lg p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-contrast)]">
+                                <X className="h-5 w-5" />
+                            </button>
+                        </div>
+
+                        {/* Content */}
+                        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
+                            {/* Headless Mode */}
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <div className="text-xs font-medium text-[var(--ink)]">无头模式</div>
+                                    <div className="text-[10px] text-[var(--ink-muted)]">后台运行，不弹出浏览器窗口</div>
+                                </div>
+                                <button
+                                    onClick={() => setPlaywrightSettings(prev => prev ? { ...prev, headless: !prev.headless } : null)}
+                                    className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
+                                        playwrightSettings.headless ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
+                                    }`}
+                                >
+                                    <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                                        playwrightSettings.headless ? 'translate-x-5' : 'translate-x-0'
+                                    }`} />
+                                </button>
+                            </div>
+
+                            {/* Browser */}
+                            <div>
+                                <label className="block text-xs font-medium text-[var(--ink-muted)] mb-2">浏览器</label>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {(() => {
+                                        const knownBrowsers = [
+                                            { id: '', label: '默认 (Chromium)' },
+                                            { id: 'chrome', label: 'Chrome' },
+                                            { id: 'firefox', label: 'Firefox' },
+                                            { id: 'webkit', label: 'WebKit' },
+                                            { id: 'msedge', label: 'Edge' },
+                                        ];
+                                        const isKnown = knownBrowsers.some(b => b.id === playwrightSettings.browser);
+                                        const items = isKnown ? knownBrowsers : [...knownBrowsers, { id: playwrightSettings.browser, label: playwrightSettings.browser }];
+                                        return items.map(b => (
+                                            <button
+                                                key={b.id}
+                                                onClick={() => setPlaywrightSettings(prev => prev ? { ...prev, browser: b.id } : null)}
+                                                className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
+                                                    playwrightSettings.browser === b.id
+                                                        ? 'bg-[var(--accent)] text-white'
+                                                        : 'bg-[var(--paper-contrast)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                                                }`}
+                                            >
+                                                {b.label}
+                                            </button>
+                                        ));
+                                    })()}
+                                </div>
+                            </div>
+
+                            {/* Device Emulation */}
+                            <div>
+                                <label className="block text-xs font-medium text-[var(--ink-muted)] mb-2">设备模拟</label>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {[
+                                        { id: '', label: '不模拟' },
+                                        ...PLAYWRIGHT_DEVICE_PRESETS.map(name => ({ id: name, label: name })),
+                                        { id: '__custom__', label: '自定义' },
+                                    ].map(d => (
+                                        <button
+                                            key={d.id}
+                                            onClick={() => setPlaywrightSettings(prev => prev ? { ...prev, device: d.id } : null)}
+                                            className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
+                                                playwrightSettings.device === d.id
+                                                    ? 'bg-[var(--accent)] text-white'
+                                                    : 'bg-[var(--paper-contrast)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                                            }`}
+                                        >
+                                            {d.label}
+                                        </button>
+                                    ))}
+                                </div>
+                                {playwrightSettings.device === '__custom__' && (
+                                    <input
+                                        type="text"
+                                        value={playwrightSettings.customDevice}
+                                        onChange={e => setPlaywrightSettings(prev => prev ? { ...prev, customDevice: e.target.value } : null)}
+                                        placeholder="输入设备名称，如 Galaxy S24"
+                                        className="mt-2 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-xs text-[var(--ink)] placeholder-[var(--ink-muted)]/50 outline-none focus:border-[var(--accent)]"
+                                    />
+                                )}
+                            </div>
+
+                            {/* User Data Dir */}
+                            <div>
+                                <label className="block text-xs font-medium text-[var(--ink-muted)] mb-1">浏览器数据目录</label>
+                                <input
+                                    type="text"
+                                    value={playwrightSettings.userDataDir}
+                                    onChange={e => setPlaywrightSettings(prev => prev ? { ...prev, userDataDir: e.target.value } : null)}
+                                    placeholder="~/.playwright-mcp-profile"
+                                    className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-xs text-[var(--ink)] placeholder-[var(--ink-muted)]/50 outline-none focus:border-[var(--accent)] font-mono"
+                                />
+                                <p className="mt-1 text-[10px] text-[var(--ink-muted)]">持久化浏览器数据（登录态、Cookie 等）。留空则每次使用临时目录</p>
+                            </div>
+
+                            {/* Advanced Section Divider */}
+                            <div className="border-t border-[var(--line)] pt-4">
+                                <span className="text-xs font-medium text-[var(--ink-muted)]">高级设置</span>
+                            </div>
+
+                            {/* Extra Args */}
+                            <div>
+                                <label className="block text-xs font-medium text-[var(--ink-muted)] mb-1">额外参数</label>
+                                <p className="text-[10px] text-[var(--ink-muted)] mb-2">如 --proxy-server=... --caps=vision,pdf 等</p>
+                                <div className="space-y-2">
+                                    {playwrightSettings.extraArgs.map((arg, idx) => (
+                                        <div key={idx} className="flex items-center gap-2">
+                                            <span className="flex-1 rounded-lg bg-[var(--paper-contrast)] px-3 py-1.5 font-mono text-xs text-[var(--ink)] break-all">
+                                                {arg}
+                                            </span>
+                                            <button
+                                                onClick={() => setPlaywrightSettings(prev => prev ? {
+                                                    ...prev,
+                                                    extraArgs: prev.extraArgs.filter((_, i) => i !== idx),
+                                                } : null)}
+                                                className="shrink-0 rounded p-1 text-[var(--error)] hover:bg-[var(--error-bg)]"
+                                            >
+                                                <X className="h-3.5 w-3.5" />
+                                            </button>
+                                        </div>
+                                    ))}
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            value={playwrightSettings.newArg}
+                                            onChange={e => setPlaywrightSettings(prev => prev ? { ...prev, newArg: e.target.value } : null)}
+                                            onKeyDown={e => {
+                                                if (e.key === 'Enter' && playwrightSettings.newArg.trim()) {
+                                                    setPlaywrightSettings(prev => prev ? {
+                                                        ...prev,
+                                                        extraArgs: [...prev.extraArgs, prev.newArg.trim()],
+                                                        newArg: '',
+                                                    } : null);
+                                                }
+                                            }}
+                                            placeholder="输入参数，如 --proxy-server=http://..."
+                                            className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-1.5 text-xs text-[var(--ink)] placeholder-[var(--ink-muted)]/50 outline-none focus:border-[var(--accent)]"
+                                        />
+                                        <button
+                                            onClick={() => {
+                                                if (playwrightSettings.newArg.trim()) {
+                                                    setPlaywrightSettings(prev => prev ? {
+                                                        ...prev,
+                                                        extraArgs: [...prev.extraArgs, prev.newArg.trim()],
+                                                        newArg: '',
+                                                    } : null);
+                                                }
+                                            }}
+                                            disabled={!playwrightSettings.newArg.trim()}
+                                            className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                                        >
+                                            <Plus className="h-3.5 w-3.5" />
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Footer */}
+                        <div className="flex justify-end gap-3 border-t border-[var(--line)] px-6 py-4">
+                            <button
+                                onClick={() => setPlaywrightSettings(null)}
+                                className="rounded-lg px-4 py-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--paper-contrast)]"
+                            >
+                                取消
+                            </button>
+                            <button
+                                onClick={handleSavePlaywright}
+                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent)]/90"
+                            >
+                                保存
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Edge TTS Settings Modal */}
+            {edgeTtsSettings && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
+                    <div className="mx-4 w-full max-w-lg rounded-2xl bg-[var(--paper-elevated)] shadow-xl max-h-[85vh] flex flex-col">
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--line)]">
+                            <h2 className="text-lg font-semibold text-[var(--ink)]">Edge TTS 语音合成 设置</h2>
+                            <button onClick={() => setEdgeTtsSettings(null)} className="rounded-lg p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-contrast)]">
+                                <X className="h-5 w-5" />
+                            </button>
+                        </div>
+
+                        {/* Content */}
+                        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
+                            {/* Free service notice */}
+                            <div className="rounded-lg bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200/60 dark:border-emerald-500/30 px-3 py-2">
+                                <div className="flex items-center gap-2 text-xs text-emerald-700 dark:text-emerald-400">
+                                    <Check className="h-3.5 w-3.5" />
+                                    免费服务，无需 API Key，开箱即用
+                                </div>
+                            </div>
+
+                            {/* Default Voice */}
+                            <div>
+                                <label className="block text-xs font-medium text-[var(--ink-muted)] mb-1">默认语音</label>
+                                <input
+                                    type="text"
+                                    value={edgeTtsSettings.defaultVoice}
+                                    onChange={e => setEdgeTtsSettings(prev => prev ? { ...prev, defaultVoice: e.target.value } : null)}
+                                    placeholder="zh-CN-XiaoxiaoNeural"
+                                    className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-xs text-[var(--ink)] placeholder-[var(--ink-muted)]/50 outline-none focus:border-[var(--accent)] font-mono"
+                                />
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                    {[
+                                        { id: 'zh-CN-XiaoxiaoNeural', label: '晓晓 · 甜美女声' },
+                                        { id: 'zh-CN-YunxiNeural', label: '云希 · 叙事男声' },
+                                        { id: 'zh-CN-XiaomoNeural', label: '晓墨 · 温柔女声' },
+                                        { id: 'zh-CN-YunjianNeural', label: '云健 · 新闻男声' },
+                                        { id: 'en-US-JennyNeural', label: 'Jenny · English' },
+                                        { id: 'en-US-GuyNeural', label: 'Guy · English' },
+                                    ].map(v => (
+                                        <button
+                                            key={v.id}
+                                            onClick={() => setEdgeTtsSettings(prev => prev ? { ...prev, defaultVoice: v.id } : null)}
+                                            className={`rounded-md px-2 py-1 text-[10px] transition-colors ${
+                                                edgeTtsSettings.defaultVoice === v.id
+                                                    ? 'bg-[var(--accent)] text-white'
+                                                    : 'bg-[var(--paper-contrast)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                                            }`}
+                                        >
+                                            {v.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Output Format */}
+                            <div>
+                                <label className="block text-xs font-medium text-[var(--ink-muted)] mb-2">输出格式</label>
+                                <div className="flex gap-2">
+                                    {[
+                                        { id: 'audio-24khz-48kbitrate-mono-mp3', label: 'MP3（推荐）' },
+                                        { id: 'webm-24khz-16bit-mono-opus', label: 'WebM' },
+                                        { id: 'ogg-24khz-16bit-mono-opus', label: 'OGG' },
+                                    ].map(f => (
+                                        <button
+                                            key={f.id}
+                                            onClick={() => setEdgeTtsSettings(prev => prev ? { ...prev, defaultOutputFormat: f.id } : null)}
+                                            className={`rounded-md px-3 py-1.5 text-xs transition-colors ${
+                                                edgeTtsSettings.defaultOutputFormat === f.id
+                                                    ? 'bg-[var(--accent)] text-white'
+                                                    : 'bg-[var(--paper-contrast)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                                            }`}
+                                        >
+                                            {f.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Voice Parameters Divider */}
+                            <div className="border-t border-[var(--line)] pt-4">
+                                <span className="text-xs font-medium text-[var(--ink-muted)]">语音参数</span>
+                            </div>
+
+                            {/* Rate Slider */}
+                            <div>
+                                <div className="flex items-center justify-between mb-1">
+                                    <label className="text-xs font-medium text-[var(--ink-muted)]">语速</label>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs font-mono text-[var(--ink)]">{edgeTtsSettings.defaultRate >= 0 ? '+' : ''}{edgeTtsSettings.defaultRate}%</span>
+                                        {edgeTtsSettings.defaultRate !== 0 && (
+                                            <button
+                                                onClick={() => setEdgeTtsSettings(prev => prev ? { ...prev, defaultRate: 0 } : null)}
+                                                className="text-[10px] text-[var(--ink-muted)] hover:text-[var(--accent)]"
+                                            >
+                                                重置
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                                <input
+                                    type="range"
+                                    min={-100}
+                                    max={200}
+                                    step={10}
+                                    value={edgeTtsSettings.defaultRate}
+                                    onChange={e => setEdgeTtsSettings(prev => prev ? { ...prev, defaultRate: parseInt(e.target.value, 10) } : null)}
+                                    className={ttsSliderClass}
+                                />
+                                <div className="flex justify-between text-[10px] text-[var(--ink-muted)] opacity-50">
+                                    <span>-100%</span>
+                                    <span>+200%</span>
+                                </div>
+                            </div>
+
+                            {/* Volume Slider */}
+                            <div>
+                                <div className="flex items-center justify-between mb-1">
+                                    <label className="text-xs font-medium text-[var(--ink-muted)]">音量</label>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs font-mono text-[var(--ink)]">{edgeTtsSettings.defaultVolume >= 0 ? '+' : ''}{edgeTtsSettings.defaultVolume}%</span>
+                                        {edgeTtsSettings.defaultVolume !== 0 && (
+                                            <button
+                                                onClick={() => setEdgeTtsSettings(prev => prev ? { ...prev, defaultVolume: 0 } : null)}
+                                                className="text-[10px] text-[var(--ink-muted)] hover:text-[var(--accent)]"
+                                            >
+                                                重置
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                                <input
+                                    type="range"
+                                    min={-100}
+                                    max={100}
+                                    step={10}
+                                    value={edgeTtsSettings.defaultVolume}
+                                    onChange={e => setEdgeTtsSettings(prev => prev ? { ...prev, defaultVolume: parseInt(e.target.value, 10) } : null)}
+                                    className={ttsSliderClass}
+                                />
+                                <div className="flex justify-between text-[10px] text-[var(--ink-muted)] opacity-50">
+                                    <span>-100%</span>
+                                    <span>+100%</span>
+                                </div>
+                            </div>
+
+                            {/* Pitch Slider */}
+                            <div>
+                                <div className="flex items-center justify-between mb-1">
+                                    <label className="text-xs font-medium text-[var(--ink-muted)]">音调</label>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs font-mono text-[var(--ink)]">{edgeTtsSettings.defaultPitch >= 0 ? '+' : ''}{edgeTtsSettings.defaultPitch}Hz</span>
+                                        {edgeTtsSettings.defaultPitch !== 0 && (
+                                            <button
+                                                onClick={() => setEdgeTtsSettings(prev => prev ? { ...prev, defaultPitch: 0 } : null)}
+                                                className="text-[10px] text-[var(--ink-muted)] hover:text-[var(--accent)]"
+                                            >
+                                                重置
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                                <input
+                                    type="range"
+                                    min={-100}
+                                    max={100}
+                                    step={10}
+                                    value={edgeTtsSettings.defaultPitch}
+                                    onChange={e => setEdgeTtsSettings(prev => prev ? { ...prev, defaultPitch: parseInt(e.target.value, 10) } : null)}
+                                    className={ttsSliderClass}
+                                />
+                                <div className="flex justify-between text-[10px] text-[var(--ink-muted)] opacity-50">
+                                    <span>-100Hz</span>
+                                    <span>+100Hz</span>
+                                </div>
+                            </div>
+
+                            {/* Preview Section Divider */}
+                            <div className="border-t border-[var(--line)] pt-4">
+                                <span className="text-xs font-medium text-[var(--ink-muted)]">试听</span>
+                            </div>
+
+                            {/* Preview */}
+                            <div>
+                                <div className="flex gap-2">
+                                    <textarea
+                                        value={ttsPreviewText}
+                                        onChange={e => setTtsPreviewText(e.target.value)}
+                                        rows={2}
+                                        placeholder="输入试听文本..."
+                                        className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-xs text-[var(--ink)] placeholder-[var(--ink-muted)]/50 outline-none focus:border-[var(--accent)] resize-none"
+                                    />
+                                    <button
+                                        onClick={handlePreviewTts}
+                                        disabled={ttsPreviewLoading || !ttsPreviewText.trim()}
+                                        className="shrink-0 h-10 w-10 rounded-full bg-[var(--accent)] text-white flex items-center justify-center hover:bg-[var(--accent)]/90 disabled:opacity-40 transition-colors self-center"
+                                        title={ttsPreviewPlaying ? '停止' : '试听'}
+                                    >
+                                        {ttsPreviewLoading ? (
+                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                        ) : ttsPreviewPlaying ? (
+                                            <Square className="h-3.5 w-3.5" fill="currentColor" />
+                                        ) : (
+                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4 ml-0.5">
+                                                <path d="M8 5v14l11-7z" />
+                                            </svg>
+                                        )}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Footer */}
+                        <div className="flex justify-end gap-3 border-t border-[var(--line)] px-6 py-4">
+                            <button
+                                onClick={() => setEdgeTtsSettings(null)}
+                                className="rounded-lg px-4 py-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--paper-contrast)]"
+                            >
+                                取消
+                            </button>
+                            <button
+                                onClick={handleSaveEdgeTts}
                                 className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent)]/90"
                             >
                                 保存

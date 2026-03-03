@@ -29,6 +29,9 @@ import {
 } from './tools/cron-tools';
 import { setImCronContext } from './tools/im-cron-tool';
 import { setImMediaContext } from './tools/im-media-tool';
+import { getBuiltinMcp } from './tools/builtin-mcp-registry';
+// NOTE: builtin MCP side-effect imports (registerBuiltinMcp calls) live in agent-session.ts,
+// which is imported by this file — no need to duplicate them here.
 
 // ============= CRASH DIAGNOSTICS =============
 // File-based logging to capture crashes before process dies
@@ -2989,6 +2992,132 @@ async function main() {
         }
       }
 
+      // GET /api/image?path=... - Serve generated images (for browser dev mode)
+      if (pathname === '/api/image' && request.method === 'GET') {
+        try {
+          const imagePath = url.searchParams.get('path');
+          if (!imagePath) {
+            return jsonResponse({ success: false, error: 'Missing path parameter' }, 400);
+          }
+
+          // Security: only allow reading from ~/.myagents/generated/
+          const generatedDir = join(homedir(), '.myagents', 'generated');
+          const resolvedPath = resolve(imagePath);
+          // Ensure path is strictly within generatedDir (prevent prefix confusion like "generated-evil/")
+          const generatedDirWithSep = generatedDir.endsWith('/') ? generatedDir : generatedDir + '/';
+          if (!resolvedPath.startsWith(generatedDirWithSep)) {
+            return jsonResponse({ success: false, error: 'Access denied: path must be within generated directory' }, 403);
+          }
+
+          if (!existsSync(resolvedPath)) {
+            return jsonResponse({ success: false, error: 'Image not found' }, 404);
+          }
+
+          const file = Bun.file(resolvedPath);
+          const ext = resolvedPath.split('.').pop()?.toLowerCase();
+          const mimeType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png';
+
+          return new Response(file, {
+            headers: {
+              'Content-Type': mimeType,
+              'Cache-Control': 'public, max-age=86400',
+            },
+          });
+        } catch (error) {
+          console.error('[api/image] Error:', error);
+          return jsonResponse(
+            { success: false, error: error instanceof Error ? error.message : 'Failed to serve image' },
+            500
+          );
+        }
+      }
+
+      // GET /api/audio?path=... - Serve generated audio (for browser dev mode)
+      if (pathname === '/api/audio' && request.method === 'GET') {
+        try {
+          const audioPath = url.searchParams.get('path');
+          if (!audioPath) {
+            return jsonResponse({ success: false, error: 'Missing path parameter' }, 400);
+          }
+
+          // Security: only allow reading from ~/.myagents/generated_audio/
+          const generatedAudioDir = join(homedir(), '.myagents', 'generated_audio');
+          const resolvedPath = resolve(audioPath);
+          const generatedAudioDirWithSep = generatedAudioDir.endsWith(sep) ? generatedAudioDir : generatedAudioDir + sep;
+          if (!resolvedPath.startsWith(generatedAudioDirWithSep)) {
+            return jsonResponse({ success: false, error: 'Access denied: path must be within generated_audio directory' }, 403);
+          }
+
+          if (!existsSync(resolvedPath)) {
+            return jsonResponse({ success: false, error: 'Audio not found' }, 404);
+          }
+
+          const file = Bun.file(resolvedPath);
+          const ext = resolvedPath.split('.').pop()?.toLowerCase();
+          const mimeTypes: Record<string, string> = {
+            mp3: 'audio/mpeg',
+            wav: 'audio/wav',
+            ogg: 'audio/ogg',
+            webm: 'audio/webm',
+          };
+          const mimeType = mimeTypes[ext || ''] || 'audio/mpeg';
+
+          return new Response(file, {
+            headers: {
+              'Content-Type': mimeType,
+              'Cache-Control': 'public, max-age=86400',
+            },
+          });
+        } catch (error) {
+          console.error('[api/audio] Error:', error);
+          return jsonResponse(
+            { success: false, error: error instanceof Error ? error.message : 'Failed to serve audio' },
+            500
+          );
+        }
+      }
+
+      // POST /api/edge-tts/preview - Preview TTS from Settings (independent of MCP server state)
+      if (pathname === '/api/edge-tts/preview' && request.method === 'POST') {
+        try {
+          const body = await request.json() as {
+            text?: string;
+            voice?: string;
+            rate?: string;
+            volume?: string;
+            pitch?: string;
+            outputFormat?: string;
+          };
+
+          if (!body.text?.trim()) {
+            return jsonResponse({ success: false, error: 'Missing text parameter' }, 400);
+          }
+
+          // Apply same text length limit as the MCP tool
+          if (body.text.length > 10000) {
+            return jsonResponse({ success: false, error: `Text too long (${body.text.length} chars). Maximum is 10000.` }, 400);
+          }
+
+          const { synthesizePreview } = await import('./tools/edge-tts-tool');
+          const result = await synthesizePreview({
+            text: body.text,
+            voice: body.voice || 'zh-CN-XiaoxiaoNeural',
+            rate: body.rate || '0%',
+            volume: body.volume || '0%',
+            pitch: body.pitch || '+0Hz',
+            outputFormat: body.outputFormat || 'audio-24khz-48kbitrate-mono-mp3',
+          });
+
+          return jsonResponse(result);
+        } catch (error) {
+          console.error('[api/edge-tts/preview] Error:', error);
+          return jsonResponse(
+            { success: false, error: error instanceof Error ? error.message : 'Preview failed' },
+            500
+          );
+        }
+      }
+
       // ============= END FILE MANAGEMENT API =============
 
       // ============= UNIFIED LOGGING API =============
@@ -3353,6 +3482,19 @@ async function main() {
 
           console.log(`[api/mcp/enable] Enabling MCP: ${server.id}, type: ${server.type}, command: ${server.command}`);
 
+          // Built-in MCP (in-process) — delegate validation to registry
+          if (server.command === '__builtin__') {
+            const entry = getBuiltinMcp(server.id);
+            if (entry?.validate) {
+              const error = await entry.validate(server.env || {});
+              if (error) {
+                return jsonResponse({ success: false, error });
+              }
+            }
+            console.log(`[api/mcp/enable] Built-in MCP: ${server.id} — enabled`);
+            return jsonResponse({ success: true });
+          }
+
           // SSE/HTTP types: validate remote URL is reachable and protocol matches
           if (server.type === 'sse' || server.type === 'http') {
             if (!server.url) {
@@ -3367,7 +3509,8 @@ async function main() {
               const timeout = setTimeout(() => controller.abort(), 15000);
 
               const headers: Record<string, string> = {
-                'Accept': server.type === 'sse' ? 'text/event-stream' : 'application/json',
+                // Streamable HTTP 规范要求同时声明两种格式；SSE 只需 event-stream
+                'Accept': server.type === 'sse' ? 'text/event-stream' : 'application/json, text/event-stream',
                 ...(server.headers || {}),
               };
 
@@ -3444,12 +3587,19 @@ async function main() {
               }
 
               if (!response.ok) {
+                // 尝试读取 response body 以获取更具体的错误信息
+                let detail = '';
+                try {
+                  const body = await response.json() as Record<string, unknown>;
+                  const raw = String(body.message || body.msg || body.error || '');
+                  detail = raw.length > 200 ? raw.slice(0, 200) + '…' : raw;
+                } catch { /* body 不是 JSON，忽略 */ }
                 cleanup();
                 return jsonResponse({
                   success: false,
                   error: {
                     type: 'connection_failed',
-                    message: `服务器返回错误 (HTTP ${response.status})`,
+                    message: `服务器返回错误 (HTTP ${response.status})${detail ? '：' + detail : ''}`,
                   }
                 });
               }
@@ -3476,39 +3626,62 @@ async function main() {
                   });
                 }
               } else {
-                // Streamable HTTP: read body then cleanup
+                // Streamable HTTP: server may respond with JSON or SSE (both valid per spec)
                 // (response.ok is guaranteed here — non-ok statuses returned above)
-                try {
-                  const body = await response.json();
-                  cleanup();
-                  if (!body.jsonrpc && !body.result && !body.error) {
-                    return jsonResponse({
-                      success: false,
-                      error: {
-                        type: 'connection_failed',
-                        message: '服务器响应不是有效的 JSON-RPC 格式，请检查 URL 和传输协议',
+                if (contentType.includes('text/event-stream')) {
+                  // SSE response to POST — valid per MCP Streamable HTTP spec.
+                  // Read enough to extract the first JSON-RPC message from SSE data lines.
+                  try {
+                    const text = await response.text();
+                    cleanup();
+                    const dataLine = text.split('\n').find(l => l.startsWith('data:'));
+                    if (dataLine) {
+                      const body = JSON.parse(dataLine.slice(5));
+                      if (!body.jsonrpc && !body.result && !body.error) {
+                        return jsonResponse({
+                          success: false,
+                          error: {
+                            type: 'connection_failed',
+                            message: '服务器 SSE 响应中的数据不是有效的 JSON-RPC 格式',
+                          }
+                        });
                       }
-                    });
-                  }
-                } catch {
-                  cleanup();
-                  // Response is not JSON — might be SSE endpoint
-                  if (contentType.includes('text/event-stream')) {
-                    return jsonResponse({
-                      success: false,
-                      error: {
-                        type: 'connection_failed',
-                        message: '该 URL 是 SSE 端点，请切换传输协议为 "SSE"',
-                      }
-                    });
-                  }
-                  return jsonResponse({
-                    success: false,
-                    error: {
-                      type: 'connection_failed',
-                      message: `服务器响应不是有效的 JSON 格式 (${contentType || 'unknown'})`,
                     }
-                  });
+                    // SSE stream with valid data or empty (server might send events later) — accept
+                  } catch {
+                    cleanup();
+                    return jsonResponse({
+                      success: false,
+                      error: {
+                        type: 'connection_failed',
+                        message: '无法解析服务器的 SSE 响应，请检查 URL 和传输协议',
+                      }
+                    });
+                  }
+                } else {
+                  // JSON response — original path
+                  try {
+                    const body = await response.json();
+                    cleanup();
+                    if (!body.jsonrpc && !body.result && !body.error) {
+                      return jsonResponse({
+                        success: false,
+                        error: {
+                          type: 'connection_failed',
+                          message: '服务器响应不是有效的 JSON-RPC 格式，请检查 URL 和传输协议',
+                        }
+                      });
+                    }
+                  } catch {
+                    cleanup();
+                    return jsonResponse({
+                      success: false,
+                      error: {
+                        type: 'connection_failed',
+                        message: `服务器响应不是有效的 JSON 格式 (${contentType || 'unknown'})`,
+                      }
+                    });
+                  }
                 }
               }
 
@@ -5855,7 +6028,7 @@ async function main() {
                 try { controller.close(); } catch { /* already closed */ }
               };
 
-              // 600s safety timeout
+              // 3600s (60 min) safety timeout — aligned with cron task timeout
               safetyTimer = setTimeout(() => {
                 if (!closed) {
                   // Flush any remaining text as final block
@@ -5863,10 +6036,11 @@ async function main() {
                     sendEvent({ type: 'block-end', text: imAccText });
                     imAccText = '';
                   }
-                  sendEvent({ type: 'complete', sessionId: getSessionId() });
+                  // Send 'error' (not 'complete') to prevent Rust from treating timeout as success
+                  sendEvent({ type: 'error', error: 'IM 响应超时（60分钟），请重新发送' });
                   closeStream();
                 }
-              }, 600000);
+              }, 3_600_000);
 
               setImStreamCallback((event, data) => {
                 if (event === 'permission-request') {

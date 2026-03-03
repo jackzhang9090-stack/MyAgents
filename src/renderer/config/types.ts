@@ -423,6 +423,29 @@ export const PRESET_PROVIDERS: Provider[] = [
     ],
   },
   {
+    id: 'google-gemini',
+    name: 'Google Gemini',
+    vendor: 'Google',
+    cloudProvider: '模型官方',
+    type: 'api',
+    primaryModel: 'gemini-2.5-flash',
+    isBuiltin: true,
+    authType: 'api_key',
+    apiProtocol: 'openai',
+    maxOutputTokens: 8192,
+    websiteUrl: 'https://aistudio.google.com/apikey',
+    config: {
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    },
+    models: [
+      { model: 'gemini-2.5-pro', modelName: 'Gemini 2.5 Pro', modelSeries: 'google' },
+      { model: 'gemini-2.5-flash', modelName: 'Gemini 2.5 Flash', modelSeries: 'google' },
+      { model: 'gemini-2.5-flash-lite', modelName: 'Gemini 2.5 Flash-Lite', modelSeries: 'google' },
+      { model: 'gemini-3.1-pro-preview', modelName: 'Gemini 3.1 Pro Preview', modelSeries: 'google' },
+      { model: 'gemini-3-flash-preview', modelName: 'Gemini 3 Flash Preview', modelSeries: 'google' },
+    ],
+  },
+  {
     id: 'volcengine',
     name: '火山方舟 Coding Plan',
     vendor: '字节跳动',
@@ -579,6 +602,7 @@ export interface McpServerDefinition {
 
   // Metadata
   isBuiltin: boolean;      // Is a preset MCP
+  isFree?: boolean;        // No API key / paid service required
   requiresConfig?: string[];  // Required config fields (e.g., API keys)
 }
 
@@ -615,15 +639,37 @@ export const PRESET_MCP_SERVERS: McpServerDefinition[] = [
     command: 'npx',
     args: ['@playwright/mcp@latest'],
     isBuiltin: true,
+    isFree: true,
   },
   {
     id: 'ddg-search',
-    name: 'DDG-Search',
-    description: 'DuckDuckGo 全网搜索，免费快速',
+    name: 'DuckDuckGo 搜索引擎',
+    description: '全网搜索，免费快速',
     type: 'stdio',
     command: 'uvx',
     args: ['duckduckgo-mcp-server'],
     isBuiltin: true,
+    isFree: true,
+  },
+  {
+    id: 'gemini-image',
+    name: 'Nano Banana 图片生成',
+    description: '支持图片生成与多轮编辑（基于 Gemini Nano Banana）',
+    type: 'stdio',
+    command: '__builtin__',
+    args: [],
+    isBuiltin: true,
+    requiresConfig: ['GEMINI_API_KEY'],
+  },
+  {
+    id: 'edge-tts',
+    name: 'Edge TTS 语音合成',
+    description: '免费文字转语音，支持 400+ 语音（基于 Microsoft Edge TTS，无需 API Key）',
+    type: 'stdio',
+    command: '__builtin__',
+    args: [],
+    isBuiltin: true,
+    isFree: true,
   },
 ];
 
