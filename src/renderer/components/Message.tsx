@@ -8,6 +8,18 @@ import { useImagePreview } from '@/context/ImagePreviewContext';
 import type { ContentBlock, Message as MessageType } from '@/types/chat';
 import { SOURCE_LABELS, type MessageSource } from '../../shared/types/im';
 
+/** Lightweight CSS-only tooltip — appears instantly on hover, no JS timers. */
+function Tip({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <span className="group/tip relative inline-flex">
+      {children}
+      <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--ink)]/90 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity group-hover/tip:opacity-100">
+        {label}
+      </span>
+    </span>
+  );
+}
+
 interface MessageProps {
   message: MessageType;
   isLoading?: boolean;
@@ -101,9 +113,10 @@ function extractAssistantText(content: MessageType['content']): string {
  * Action bar for assistant messages: copy + retry.
  * Always visible (not hover), left-aligned icon buttons.
  */
-function AssistantActions({ message, onRetry }: {
+function AssistantActions({ message, onRetry, className = '' }: {
   message: MessageType;
   onRetry?: (id: string) => void;
+  className?: string;
 }) {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -115,25 +128,29 @@ function AssistantActions({ message, onRetry }: {
   const text = extractAssistantText(message.content);
 
   return (
-    <div className="flex items-center gap-0.5 px-4 pt-1">
-      <button type="button"
-        title={copied ? '已复制' : '复制'}
-        onClick={() => {
-          navigator.clipboard.writeText(text).catch(() => {});
-          setCopied(true);
-          if (timerRef.current) clearTimeout(timerRef.current);
-          timerRef.current = setTimeout(() => setCopied(false), 1500);
-        }}
-        className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]">
-        {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-      </button>
-      {onRetry && (
+    <div className={`flex items-center gap-2 -ml-1 pt-1 ${className}`}>
+      <Tip label={copied ? '已复制' : '复制'}>
         <button type="button"
-          title="重试"
-          onClick={() => onRetry(message.id)}
+          aria-label="复制"
+          onClick={() => {
+            navigator.clipboard.writeText(text).catch(() => {});
+            setCopied(true);
+            if (timerRef.current) clearTimeout(timerRef.current);
+            timerRef.current = setTimeout(() => setCopied(false), 1500);
+          }}
           className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]">
-          <RotateCcw className="size-3.5" />
+          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
         </button>
+      </Tip>
+      {onRetry && (
+        <Tip label="重试">
+          <button type="button"
+            aria-label="重试"
+            onClick={() => onRetry(message.id)}
+            className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]">
+            <RotateCcw className="size-3.5" />
+          </button>
+        </Tip>
       )}
     </div>
   );
@@ -222,27 +239,31 @@ const Message = memo(function Message({ message, isLoading = false, isStreaming,
             )}
           </article>
           {/* 操作栏：时间 + 图标按钮，hover 淡入 */}
-          <div className="mr-2 mt-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/user:opacity-100">
+          <div className="mr-2 mt-1 flex items-center gap-2 opacity-0 transition-opacity group-hover/user:opacity-100">
             <span className="text-[11px] text-[var(--ink-muted)] mr-1">{formatTimestamp(message.timestamp)}</span>
             {!isStreaming && onRewind && (
-              <button type="button"
-                title="时间回溯"
-                onClick={() => onRewind(message.id)}
-                className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]">
-                <Undo2 className="size-3.5" />
-              </button>
+              <Tip label="时间回溯">
+                <button type="button"
+                  aria-label="时间回溯"
+                  onClick={() => onRewind(message.id)}
+                  className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]">
+                  <Undo2 className="size-3.5" />
+                </button>
+              </Tip>
             )}
-            <button type="button"
-              title={copied ? '已复制' : '复制'}
-              onClick={() => {
-                navigator.clipboard.writeText(userContent).catch(() => {});
-                setCopied(true);
-                if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
-                copiedTimerRef.current = setTimeout(() => setCopied(false), 1500);
-              }}
-              className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]">
-              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-            </button>
+            <Tip label={copied ? '已复制' : '复制'}>
+              <button type="button"
+                aria-label="复制"
+                onClick={() => {
+                  navigator.clipboard.writeText(userContent).catch(() => {});
+                  setCopied(true);
+                  if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+                  copiedTimerRef.current = setTimeout(() => setCopied(false), 1500);
+                }}
+                className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]">
+                {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+              </button>
+            </Tip>
           </div>
         </div>
       </div>
@@ -372,7 +393,7 @@ const Message = memo(function Message({ message, isLoading = false, isStreaming,
             })}
           </div>
         </article>
-        {!isStreaming && <AssistantActions message={message} onRetry={onRetry} />}
+        {!isStreaming && <AssistantActions className="px-4" message={message} onRetry={onRetry} />}
       </div>
     </div>
   );
