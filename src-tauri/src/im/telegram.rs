@@ -237,7 +237,7 @@ impl TelegramAdapter {
             approval_tx,
             short_id_map: Arc::new(Mutex::new(HashMap::new())),
             group_event_tx,
-            use_message_draft: config.telegram_use_draft.unwrap_or(false),
+            use_message_draft: config.telegram_use_draft.unwrap_or(true),
             draft_fallback: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }

@@ -685,8 +685,8 @@ export default function ImBotDetail({
                         s => globalMcpEnabled.includes(s.id) && updated.includes(s.id)
                     );
                     await invokePatch({
-                        mcpEnabledServers: updated.length > 0 ? updated : undefined,
-                        mcpServersJson: enabledDefs.length > 0 ? JSON.stringify(enabledDefs) : null,
+                        mcpEnabledServers: updated,
+                        mcpServersJson: enabledDefs.length > 0 ? JSON.stringify(enabledDefs) : '',
                     });
                 }}
             />
@@ -712,25 +712,25 @@ export default function ImBotDetail({
                 <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                     <div className="flex items-center justify-between">
                         <div>
-                            <p className="text-sm font-medium text-[var(--ink)]">Draft 流式模式 (实验性)</p>
+                            <p className="text-sm font-medium text-[var(--ink)]">Draft 流式模式</p>
                             <p className="text-xs text-[var(--ink-muted)] mt-0.5">
-                                使用 Telegram sendMessageDraft API 实现打字机效果，更新间隔从 1s 降至 300ms。需要 Bot API 9.5+，修改后需重启 Bot 生效。
+                                使用 sendMessageDraft 实现打字机效果，默认开启。如果消息加载异常可以关闭此选项，修改后需重启 Bot 生效。
                             </p>
                         </div>
                         <button
                             type="button"
                             role="switch"
-                            aria-checked={botConfig.telegramUseDraft ?? false}
+                            aria-checked={botConfig.telegramUseDraft ?? true}
                             onClick={async () => {
-                                await invokePatch({ telegramUseDraft: !(botConfig.telegramUseDraft ?? false) });
+                                await invokePatch({ telegramUseDraft: !(botConfig.telegramUseDraft ?? true) });
                             }}
                             className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                                (botConfig.telegramUseDraft ?? false) ? 'bg-[var(--accent)]' : 'bg-[var(--ink-muted)]/30'
+                                (botConfig.telegramUseDraft ?? true) ? 'bg-[var(--accent)]' : 'bg-[var(--ink-muted)]/30'
                             }`}
                         >
                             <span
                                 className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                                    (botConfig.telegramUseDraft ?? false) ? 'translate-x-4' : 'translate-x-0'
+                                    (botConfig.telegramUseDraft ?? true) ? 'translate-x-4' : 'translate-x-0'
                                 }`}
                             />
                         </button>
