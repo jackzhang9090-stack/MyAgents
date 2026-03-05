@@ -31,7 +31,7 @@ interface SwipeState {
   currentEl: HTMLElement | null;
   adjacentEl: HTMLElement | null;
   adjacentIndex: number;
-  activeOnEnd: (() => void) | null;
+  activeOnEnd: ((e?: Event) => void) | null;
   activeOnEndEl: HTMLElement | null;
   cooldownUntil: number;
   // Momentum detection (acceleration factor analysis, adapted from wheel-gestures)
@@ -67,6 +67,10 @@ const ACC_FACTOR_MIN = 0.6;            // min acceleration factor for momentum
 const ACC_FACTOR_MAX = 0.96;           // max acceleration factor for momentum
 const EVENTS_TO_MERGE = 2;             // merge every 2 events for noise smoothing
 const ACC_FACTORS_NEEDED = 5;          // need 5 consecutive factors in range (~12 events total)
+
+// WebKit (WKWebView) non-standard wheel event phases
+const WEBKIT_PHASE_ENDED = 8;          // NSEventPhaseEnded — finger lifted
+const WEBKIT_PHASE_CANCELLED = 16;     // NSEventPhaseCancelled
 
 const SNAP_DURATION = 200;             // ms
 const SNAP_EASING = 'cubic-bezier(0.2, 1, 0.3, 1)';
@@ -132,7 +136,7 @@ export function useTabSwipeGesture({
 
     function detachOnEnd() {
       if (state.activeOnEnd && state.activeOnEndEl) {
-        state.activeOnEndEl.removeEventListener('transitionend', state.activeOnEnd);
+        state.activeOnEndEl.removeEventListener('transitionend', state.activeOnEnd as EventListener);
       }
       state.activeOnEnd = null;
       state.activeOnEndEl = null;
@@ -320,7 +324,8 @@ export function useTabSwipeGesture({
           capturedAdjEl.style.transform = 'translateX(0)';
         });
 
-        const onEnd = () => {
+        const onEnd = (e?: Event) => {
+          if (e instanceof TransitionEvent && e.propertyName !== 'transform') return;
           if (state.generation !== gen) return;
           state.generation++;
           clearAllTimers();
@@ -335,7 +340,7 @@ export function useTabSwipeGesture({
           resetState();
           state.cooldownUntil = performance.now() + COMMIT_COOLDOWN;
         };
-        adjEl.addEventListener('transitionend', onEnd, { once: true });
+        adjEl.addEventListener('transitionend', onEnd as EventListener, { once: true });
         state.activeOnEnd = onEnd;
         state.activeOnEndEl = adjEl;
         // +32ms accounts for rAF delay before transition starts
@@ -359,7 +364,8 @@ export function useTabSwipeGesture({
         });
 
         const listenEl = adjEl ?? curEl;
-        const onEnd = () => {
+        const onEnd = (e?: Event) => {
+          if (e instanceof TransitionEvent && e.propertyName !== 'transform') return;
           if (state.generation !== gen) return;
           state.generation++;
           clearAllTimers();
@@ -368,7 +374,7 @@ export function useTabSwipeGesture({
           resetState();
           state.cooldownUntil = performance.now() + BOUNCE_COOLDOWN;
         };
-        listenEl.addEventListener('transitionend', onEnd, { once: true });
+        listenEl.addEventListener('transitionend', onEnd as EventListener, { once: true });
         state.activeOnEnd = onEnd;
         state.activeOnEndEl = listenEl;
         state.snapTimer = setTimeout(onEnd, SNAP_DURATION + SNAP_SAFETY_BUFFER + 32);
@@ -455,8 +461,13 @@ export function useTabSwipeGesture({
 
       // ── Init tracking ──
       const activeIndex = getActiveIndex();
-      if (activeIndex === -1) return;
+      if (activeIndex === -1) {
+        // Tab was removed mid-gesture — clean up stale tracking state
+        if (state.phase === 'tracking') { cleanupDOM(); resetState(); }
+        return;
+      }
       const cw = cont.clientWidth;
+      if (cw === 0) return; // container hidden or not laid out yet
 
       if (state.phase === 'idle') {
         state.phase = 'tracking';
@@ -478,8 +489,8 @@ export function useTabSwipeGesture({
       state.offsetX = clamp(state.offsetX - deltaX, -cw, cw);
       addSample(-deltaX);
 
-      // ── Feed momentum detector ──
-      const momentumDetected = feedMomentumDetector(-deltaX);
+      // ── Feed momentum detector (side-effect: updates state.momentumFlag) ──
+      feedMomentumDetector(-deltaX);
 
       // ── Resolve adjacent tab ──
       const wantIdx = state.offsetX > 0
@@ -542,7 +553,7 @@ export function useTabSwipeGesture({
       }
 
       // ── WebKit phase-based gesture end (if available) ──
-      if (wheelPhase === 8 || wheelPhase === 16) {
+      if (wheelPhase === WEBKIT_PHASE_ENDED || wheelPhase === WEBKIT_PHASE_CANCELLED) {
         if (state.idleTimer !== null) { clearTimeout(state.idleTimer); state.idleTimer = null; }
         makeSnapDecision();
         return;
@@ -562,9 +573,8 @@ export function useTabSwipeGesture({
       //   - Fast movement (v > COMMIT_VELOCITY)  → 200ms (quick flick → decide fast)
       //   - Slow / paused                        → 500ms (finger might still be on pad)
       if (atBoundary) {
-        if (state.idleTimer === null) {
-          state.idleTimer = setTimeout(makeSnapDecision, IDLE_BOUNDARY);
-        }
+        if (state.idleTimer !== null) clearTimeout(state.idleTimer);
+        state.idleTimer = setTimeout(makeSnapDecision, IDLE_BOUNDARY);
       } else {
         if (state.idleTimer !== null) clearTimeout(state.idleTimer);
         const absDelta = Math.abs(deltaX);
