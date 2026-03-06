@@ -1011,7 +1011,6 @@ fn diagnose_immediate_exit(status: &std::process::ExitStatus, bun_path: &std::pa
         // On Windows, ExitStatus wraps the process exit code.
         // 0xc0000135 (STATUS_DLL_NOT_FOUND) = missing DLL (e.g., VCRUNTIME140.dll)
         // 0xc0000142 (STATUS_DLL_INIT_FAILED) = DLL initialization failed
-        use std::os::windows::process::ExitStatusExt;
         let code = status.code().unwrap_or(0) as u32;
         let hint = match code {
             0xc0000135 => {

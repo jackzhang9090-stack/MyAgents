@@ -163,7 +163,7 @@ try {
     }
 
     # Main
-    Write-Host "Step 1/7: 检查依赖" -ForegroundColor Blue
+    Write-Host "Step 1/8: 检查依赖" -ForegroundColor Blue
     $Missing = $false
 
     if (-not (Test-Dependency "Node.js" "node --version" "https://nodejs.org")) { $Missing = $true }
@@ -180,7 +180,7 @@ try {
         exit 1
     }
 
-    Write-Host "`nStep 2/7: 下载 Bun 运行时" -ForegroundColor Blue
+    Write-Host "`nStep 2/8: 下载 Bun 运行时" -ForegroundColor Blue
     Get-BunBinary
 
     Write-Host "`nStep 3/8: 下载 Git 安装包 (用于 NSIS 打包)" -ForegroundColor Blue

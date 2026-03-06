@@ -161,20 +161,25 @@ try {
     }
 
     # VC++ Runtime DLL (app-local deployment for bun.exe)
-    $vcRuntimePath = "src-tauri\resources\vcruntime140.dll"
+    $resDir = "src-tauri\resources"
+    $vcDlls = @("vcruntime140.dll", "vcruntime140_1.dll")
     Write-Host "  检查 VC++ Runtime DLL... " -NoNewline
-    if (Test-Path $vcRuntimePath) {
+    $allPresent = $true
+    foreach ($dll in $vcDlls) {
+        if (-not (Test-Path (Join-Path $resDir $dll))) { $allPresent = $false; break }
+    }
+    if ($allPresent) {
         Write-Host "OK" -ForegroundColor Green
     } else {
         # Auto-extract from system if not present (dev machine always has MSVC)
         $systemDll = "$env:SystemRoot\System32\vcruntime140.dll"
         if (Test-Path $systemDll) {
-            $resDir = "src-tauri\resources"
             if (-not (Test-Path $resDir)) { New-Item -ItemType Directory -Path $resDir -Force | Out-Null }
-            Copy-Item $systemDll (Join-Path $resDir "vcruntime140.dll") -Force
-            $systemDll1 = "$env:SystemRoot\System32\vcruntime140_1.dll"
-            if (Test-Path $systemDll1) {
-                Copy-Item $systemDll1 (Join-Path $resDir "vcruntime140_1.dll") -Force
+            foreach ($dll in $vcDlls) {
+                $src = "$env:SystemRoot\System32\$dll"
+                if (Test-Path $src) {
+                    Copy-Item $src (Join-Path $resDir $dll) -Force
+                }
             }
             Write-Host "OK (auto-extracted)" -ForegroundColor Green
         } else {
