@@ -160,6 +160,30 @@ try {
         $depOk = $false
     }
 
+    # VC++ Runtime DLL (app-local deployment for bun.exe)
+    $vcRuntimePath = "src-tauri\resources\vcruntime140.dll"
+    Write-Host "  检查 VC++ Runtime DLL... " -NoNewline
+    if (Test-Path $vcRuntimePath) {
+        Write-Host "OK" -ForegroundColor Green
+    } else {
+        # Auto-extract from system if not present (dev machine always has MSVC)
+        $systemDll = "$env:SystemRoot\System32\vcruntime140.dll"
+        if (Test-Path $systemDll) {
+            $resDir = "src-tauri\resources"
+            if (-not (Test-Path $resDir)) { New-Item -ItemType Directory -Path $resDir -Force | Out-Null }
+            Copy-Item $systemDll (Join-Path $resDir "vcruntime140.dll") -Force
+            $systemDll1 = "$env:SystemRoot\System32\vcruntime140_1.dll"
+            if (Test-Path $systemDll1) {
+                Copy-Item $systemDll1 (Join-Path $resDir "vcruntime140_1.dll") -Force
+            }
+            Write-Host "OK (auto-extracted)" -ForegroundColor Green
+        } else {
+            Write-Host "MISSING" -ForegroundColor Red
+            Write-Host "    请先运行 .\setup_windows.ps1 提取 VC++ Runtime DLL" -ForegroundColor Yellow
+            $depOk = $false
+        }
+    }
+
     if (-not $depOk) {
         throw "缺少构建必需文件，请运行 .\setup_windows.ps1"
     }
@@ -395,7 +419,7 @@ try {
     Write-Host "[6/7] 构建 Tauri 应用 (Release)..." -ForegroundColor Blue
     Write-Host "  这可能需要几分钟，请耐心等待..." -ForegroundColor Yellow
 
-    & bun run tauri:build -- --target x86_64-pc-windows-msvc
+    & bun run tauri:build -- --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
     if ($LASTEXITCODE -ne 0) {
         throw "Tauri 构建失败"
     }
@@ -428,6 +452,14 @@ try {
             $bunExe = Join-Path $targetDir "bun-x86_64-pc-windows-msvc.exe"
             if (Test-Path $bunExe) {
                 Copy-Item $bunExe $portableDir -Force
+            }
+
+            # Copy VC++ Runtime DLLs for portable version (app-local deployment)
+            foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll")) {
+                $dllSrc = Join-Path "src-tauri\resources" $dll
+                if (Test-Path $dllSrc) {
+                    Copy-Item $dllSrc $portableDir -Force
+                }
             }
 
             $resourcesSource = Join-Path $targetDir "resources"
