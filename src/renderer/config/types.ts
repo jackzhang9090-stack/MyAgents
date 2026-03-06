@@ -604,6 +604,8 @@ export interface McpServerDefinition {
   isBuiltin: boolean;      // Is a preset MCP
   isFree?: boolean;        // No API key / paid service required
   requiresConfig?: string[];  // Required config fields (e.g., API keys)
+  websiteUrl?: string;     // Website for API key registration
+  configHint?: string;     // Help text shown in settings dialog (e.g., "去官网注册获取 API Key")
 }
 
 /**
@@ -644,12 +646,23 @@ export const PRESET_MCP_SERVERS: McpServerDefinition[] = [
   {
     id: 'ddg-search',
     name: 'DuckDuckGo 搜索引擎',
-    description: '全网搜索，免费快速',
+    description: '免费全网搜索，无需 API Key。受 DuckDuckGo 频率限制（≤1次/秒，≤15000次/月），高频使用可能返回 400 错误',
     type: 'stdio',
     command: 'uvx',
     args: ['duckduckgo-mcp-server'],
     isBuiltin: true,
     isFree: true,
+  },
+  {
+    id: 'tavily-search',
+    name: 'Tavily 搜索引擎',
+    description: '专为 AI 优化的全网搜索，返回结构化结果。免费 1000 次/月，无需信用卡',
+    type: 'http',
+    url: 'https://mcp.tavily.com/mcp/?tavilyApiKey={{TAVILY_API_KEY}}',
+    isBuiltin: true,
+    requiresConfig: ['TAVILY_API_KEY'],
+    websiteUrl: 'https://app.tavily.com/home',
+    configHint: '免费注册即可获取 API Key（1000 次/月，无需信用卡）',
   },
   {
     id: 'gemini-image',
@@ -660,6 +673,8 @@ export const PRESET_MCP_SERVERS: McpServerDefinition[] = [
     args: [],
     isBuiltin: true,
     requiresConfig: ['GEMINI_API_KEY'],
+    websiteUrl: 'https://aistudio.google.com/apikey',
+    configHint: '在 Google AI Studio 一键创建 API Key',
   },
   {
     id: 'edge-tts',

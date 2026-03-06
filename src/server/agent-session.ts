@@ -1051,12 +1051,19 @@ function buildSdkMcpServers(): Record<string, SdkMcpServerConfig | typeof cronTo
 
       result[server.id] = mcpConfig;
     } else if ((server.type === 'sse' || server.type === 'http') && server.url) {
+      // Substitute {{ENV_VAR}} placeholders in URL with values from server.env
+      let resolvedUrl = server.url;
+      if (server.env) {
+        resolvedUrl = resolvedUrl.replace(/\{\{(\w+)\}\}/g, (_, key) => server.env?.[key] ?? '');
+      }
       result[server.id] = {
         type: server.type,
-        url: server.url,
+        url: resolvedUrl,
         headers: server.headers,
       };
-      console.log(`[agent] MCP ${server.id}: ${server.type} → ${server.url}`);
+      // Log URL with API key masked for security
+      const maskedUrl = resolvedUrl.replace(/([?&]\w*[Kk]ey=)[^&]+/g, '$1***');
+      console.log(`[agent] MCP ${server.id}: ${server.type} → ${maskedUrl}`);
     } else if (server.type === 'sse' || server.type === 'http') {
       console.warn(`[agent] MCP ${server.id}: Missing url for ${server.type} server, skipping`);
     }

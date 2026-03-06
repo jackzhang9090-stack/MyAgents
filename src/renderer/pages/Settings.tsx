@@ -833,11 +833,17 @@ export default function Settings({ initialSection, initialMcpId, onSectionChange
 
         const extraArgs = savedArgs ?? [];
 
+        // Pre-populate required config fields so they show in the dialog
+        const env: Record<string, string> = { ...savedEnv };
+        for (const key of server.requiresConfig ?? []) {
+            if (!(key in env)) env[key] = '';
+        }
+
         setBuiltinMcpSettings({
             server,
             extraArgs,
             newArg: '',
-            env: { ...savedEnv },
+            env,
             newEnvKey: '',
         });
     };
@@ -2768,16 +2774,20 @@ export default function Settings({ initialSection, initialMcpId, onSectionChange
 
                         {/* Content */}
                         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
-                            {/* Preset command (read-only) */}
+                            {/* Preset command/URL (read-only) */}
                             <div>
-                                <label className="block text-sm font-medium text-[var(--ink)] mb-1">预设命令</label>
+                                <label className="block text-sm font-medium text-[var(--ink)] mb-1">
+                                    {builtinMcpSettings.server.type === 'stdio' ? '预设命令' : '服务地址'}
+                                </label>
                                 <div className="rounded-lg bg-[var(--paper-inset)] px-3 py-2 font-mono text-xs text-[var(--ink-muted)]">
-                                    {builtinMcpSettings.server.command} {(getPresetMcpServer(builtinMcpSettings.server.id)?.args ?? []).join(' ')}
+                                    {builtinMcpSettings.server.type === 'stdio'
+                                        ? `${builtinMcpSettings.server.command} ${(getPresetMcpServer(builtinMcpSettings.server.id)?.args ?? []).join(' ')}`
+                                        : (builtinMcpSettings.server.url?.replace(/\{\{\w+\}\}/g, '***') ?? '')}
                                 </div>
                             </div>
 
-                            {/* Extra Args */}
-                            <div>
+                            {/* Extra Args (stdio only) */}
+                            {builtinMcpSettings.server.type === 'stdio' && <div>
                                 <label className="block text-sm font-medium text-[var(--ink)] mb-1">额外参数</label>
                                 <p className="text-xs text-[var(--ink-muted)] mb-2">以下参数将追加到预设命令之后</p>
                                 <div className="space-y-2">
@@ -2831,7 +2841,23 @@ export default function Settings({ initialSection, initialMcpId, onSectionChange
                                         </button>
                                     </div>
                                 </div>
-                            </div>
+                            </div>}
+
+                            {/* Config hint + website link */}
+                            {(builtinMcpSettings.server.configHint || builtinMcpSettings.server.websiteUrl) && (
+                                <div className="flex items-center gap-2 rounded-lg bg-[var(--accent-bg)] px-3 py-2 text-xs text-[var(--ink-secondary)]">
+                                    <Globe className="h-3.5 w-3.5 shrink-0 text-[var(--accent)]" />
+                                    <span>{builtinMcpSettings.server.configHint}</span>
+                                    {builtinMcpSettings.server.websiteUrl && (
+                                        <ExternalLink
+                                            href={builtinMcpSettings.server.websiteUrl}
+                                            className="ml-auto shrink-0 font-medium text-[var(--accent)] hover:underline"
+                                        >
+                                            去注册
+                                        </ExternalLink>
+                                    )}
+                                </div>
+                            )}
 
                             {/* Environment Variables */}
                             <div>
