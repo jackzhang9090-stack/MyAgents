@@ -13,12 +13,13 @@ import './index.css';
 initFrontendLogger();
 
 // Block native "Reload / Inspect Element" context menu in production.
-// Keep native menu for: input fields, text selection, contenteditable, links, images.
+// Keep native menu for: input fields, text selection, contenteditable, links, images, media.
 if (!import.meta.env.DEV) {
   document.addEventListener('contextmenu', (e) => {
     const el = e.target as HTMLElement;
     const tag = el.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'A' || tag === 'IMG' || el.isContentEditable) return;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'A' || tag === 'IMG'
+      || tag === 'VIDEO' || tag === 'AUDIO' || el.isContentEditable) return;
     if (window.getSelection()?.toString()) return;
     e.preventDefault();
   });

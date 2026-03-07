@@ -2951,7 +2951,9 @@ export default function Settings({ initialSection, initialMcpId, onSectionChange
                         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--line)]">
                             <div className="min-w-0 flex-1">
                                 <h2 className="text-lg font-semibold text-[var(--ink)]">Gemini 图片生成 设置</h2>
-                                <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{getPresetMcpServer('gemini-image')?.description}</p>
+                                {getPresetMcpServer('gemini-image')?.description && (
+                                    <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{getPresetMcpServer('gemini-image')?.description}</p>
+                                )}
                             </div>
                             <button onClick={() => setGeminiImageSettings(null)} className="shrink-0 rounded-lg p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]">
                                 <X className="h-5 w-5" />
@@ -3163,7 +3165,9 @@ export default function Settings({ initialSection, initialMcpId, onSectionChange
                         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--line)]">
                             <div className="min-w-0 flex-1">
                                 <h2 className="text-lg font-semibold text-[var(--ink)]">Playwright 浏览器设置</h2>
-                                <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{getPresetMcpServer('playwright')?.description}</p>
+                                {getPresetMcpServer('playwright')?.description && (
+                                    <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{getPresetMcpServer('playwright')?.description}</p>
+                                )}
                             </div>
                             <button onClick={() => setPlaywrightSettings(null)} className="shrink-0 rounded-lg p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]">
                                 <X className="h-5 w-5" />
@@ -3357,7 +3361,9 @@ export default function Settings({ initialSection, initialMcpId, onSectionChange
                         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--line)]">
                             <div className="min-w-0 flex-1">
                                 <h2 className="text-lg font-semibold text-[var(--ink)]">Edge TTS 语音合成 设置</h2>
-                                <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{getPresetMcpServer('edge-tts')?.description}</p>
+                                {getPresetMcpServer('edge-tts')?.description && (
+                                    <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{getPresetMcpServer('edge-tts')?.description}</p>
+                                )}
                             </div>
                             <button onClick={() => setEdgeTtsSettings(null)} className="shrink-0 rounded-lg p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]">
                                 <X className="h-5 w-5" />

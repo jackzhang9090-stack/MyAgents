@@ -30,8 +30,12 @@ interface ServerTrackEvent {
   client_timestamp: string;
 }
 
-// Lazy-loaded config (null = not yet loaded, false = disabled/failed)
+// Lazy-loaded config with retry — frontend writes the file asynchronously at startup,
+// so the Sidecar may call trackServer() before the file exists. We retry periodically
+// instead of caching the failure permanently.
 let config: AnalyticsConfig | false | null = null;
+let configLoadedAt = 0;
+const CONFIG_RETRY_MS = 10_000; // retry every 10s if config was missing
 
 // Simple batch queue
 const queue: ServerTrackEvent[] = [];
@@ -43,7 +47,7 @@ function loadConfig(): AnalyticsConfig | false {
   try {
     const raw = readFileSync(CONFIG_PATH, 'utf-8');
     const parsed = JSON.parse(raw) as AnalyticsConfig;
-    if (!parsed.enabled || !parsed.apiKey) return false;
+    if (!parsed.enabled || !parsed.apiKey || !parsed.endpoint) return false;
     return parsed;
   } catch {
     return false;
@@ -51,8 +55,11 @@ function loadConfig(): AnalyticsConfig | false {
 }
 
 function getConfig(): AnalyticsConfig | false {
-  if (config === null) {
+  const now = Date.now();
+  // Retry if config failed to load and enough time has passed
+  if (config === null || (config === false && now - configLoadedAt >= CONFIG_RETRY_MS)) {
     config = loadConfig();
+    configLoadedAt = now;
   }
   return config;
 }
