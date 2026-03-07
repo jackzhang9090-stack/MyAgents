@@ -160,7 +160,38 @@ export interface Project {
   mcpEnabledServers?: string[];
   /** Internal projects (e.g. ~/.myagents diagnostic workspace) hidden from Launcher */
   internal?: boolean;
+  /** Custom emoji icon for display, defaults to FolderOpen if absent */
+  icon?: string;
+  /** Custom display name, defaults to folder name extracted from path */
+  displayName?: string;
 }
+
+// ===== Workspace Template Types =====
+
+/**
+ * Workspace template definition
+ */
+export interface WorkspaceTemplate {
+  id: string;           // kebab-case unique ID
+  name: string;         // Display name
+  description: string;  // Description (can be empty)
+  icon?: string;        // Phosphor icon ID (e.g. "sparkle") or emoji fallback; defaults to cube icon if absent
+  isBuiltin: boolean;   // true = preset template bundled with app
+  path?: string;        // User template: absolute path under ~/.myagents/templates/
+}
+
+/**
+ * Preset workspace templates bundled with the app
+ */
+export const PRESET_TEMPLATES: WorkspaceTemplate[] = [
+  {
+    id: 'mino',
+    name: 'Mino',
+    description: '内置技能、记忆与工作流的 AI Agent 工作区',
+    icon: 'sparkle',
+    isBuiltin: true,
+  },
+];
 
 /**
  * Provider verification status (with expiry support)
