@@ -262,27 +262,22 @@ export default memo(function AgentCapabilitiesPanel({
             {/* Expanded content - scrollable */}
             {isExpanded && (
                 <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-2 space-y-2">
-                    {/* Sub-Agents Group */}
-                    {agentCount > 0 && (
+                    {/* Commands Group */}
+                    {commandsCount > 0 && (
                         <div>
                             <p className="px-1 text-[11px] font-medium uppercase tracking-wider text-[var(--ink-muted)]/60">
-                                Sub-Agents ({agentCount})
+                                Commands ({commandsCount})
                             </p>
                             <div className="mt-0.5 space-y-0.5">
-                                {agentList.map(item => (
-                                    <ItemTooltip key={`agent-${item.name}`} scope={item.scope} description={item.description}>
+                                {commandsList.map(item => (
+                                    <ItemTooltip key={`cmd-${item.name}`} scope={item.scope} description={item.description}>
                                         <button
-                                            onClick={handleAgentClick}
-                                            onContextMenu={e => handleAgentContextMenu(e, item.scope)}
+                                            onClick={() => handleCommandClick(item.name)}
+                                            onContextMenu={e => handleSkillCommandContextMenu(e, item.scope)}
                                             className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-[var(--hover-bg)] transition-colors"
                                         >
-                                            <Bot className="h-3 w-3 shrink-0 text-violet-500" />
-                                            <p className="min-w-0 flex-1 truncate text-[13px] text-[var(--ink)]">{item.name}</p>
-                                            {item.model && (
-                                                <span className="shrink-0 rounded bg-[var(--paper-inset)] px-1 py-0.5 text-[10px] text-[var(--ink-muted)]">
-                                                    {item.model}
-                                                </span>
-                                            )}
+                                            <Terminal className="h-3 w-3 shrink-0 text-green-500" />
+                                            <p className="min-w-0 flex-1 truncate text-[13px] text-[var(--ink)]">/{item.name}</p>
                                         </button>
                                     </ItemTooltip>
                                 ))}
@@ -313,22 +308,27 @@ export default memo(function AgentCapabilitiesPanel({
                         </div>
                     )}
 
-                    {/* Commands Group */}
-                    {commandsCount > 0 && (
+                    {/* Sub-Agents Group */}
+                    {agentCount > 0 && (
                         <div>
                             <p className="px-1 text-[11px] font-medium uppercase tracking-wider text-[var(--ink-muted)]/60">
-                                Commands ({commandsCount})
+                                Sub-Agents ({agentCount})
                             </p>
                             <div className="mt-0.5 space-y-0.5">
-                                {commandsList.map(item => (
-                                    <ItemTooltip key={`cmd-${item.name}`} scope={item.scope} description={item.description}>
+                                {agentList.map(item => (
+                                    <ItemTooltip key={`agent-${item.name}`} scope={item.scope} description={item.description}>
                                         <button
-                                            onClick={() => handleCommandClick(item.name)}
-                                            onContextMenu={e => handleSkillCommandContextMenu(e, item.scope)}
+                                            onClick={handleAgentClick}
+                                            onContextMenu={e => handleAgentContextMenu(e, item.scope)}
                                             className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-[var(--hover-bg)] transition-colors"
                                         >
-                                            <Terminal className="h-3 w-3 shrink-0 text-green-500" />
-                                            <p className="min-w-0 flex-1 truncate text-[13px] text-[var(--ink)]">/{item.name}</p>
+                                            <Bot className="h-3 w-3 shrink-0 text-violet-500" />
+                                            <p className="min-w-0 flex-1 truncate text-[13px] text-[var(--ink)]">{item.name}</p>
+                                            {item.model && (
+                                                <span className="shrink-0 rounded bg-[var(--paper-inset)] px-1 py-0.5 text-[10px] text-[var(--ink-muted)]">
+                                                    {item.model}
+                                                </span>
+                                            )}
                                         </button>
                                     </ItemTooltip>
                                 ))}
