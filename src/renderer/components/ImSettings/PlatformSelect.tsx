@@ -119,6 +119,7 @@ export default function PlatformSelect({
         // Auto-install
         if (!isTauriEnvironment()) return;
         setAutoInstalling(promoted.pluginId);
+        toastRef.current.info('首次启动正在安装插件，请稍等…');
         try {
             const { invoke } = await import('@tauri-apps/api/core');
             const result = await invoke<InstalledPlugin>('cmd_install_openclaw_plugin', {

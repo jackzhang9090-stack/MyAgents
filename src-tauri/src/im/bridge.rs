@@ -670,12 +670,21 @@ pub async fn install_openclaw_plugin<R: tauri::Runtime>(
     // Try to read plugin manifest
     let manifest = read_plugin_manifest(&base_dir, npm_spec).await;
 
+    // Extract required config fields from plugin source (isConfigured pattern)
+    // read_plugin_manifest already resolved the package name; reuse the same logic
+    // to locate the package directory inside node_modules.
+    let npm_pkg_name = resolve_npm_pkg_name(trimmed);
+    let npm_pkg_dir = base_dir.join("node_modules").join(&npm_pkg_name);
+    let required_fields = extract_required_fields(&npm_pkg_dir).await;
+
     ulog_info!("[bridge] Plugin {} installed successfully", plugin_id);
 
     Ok(json!({
         "pluginId": plugin_id,
         "installDir": base_dir.to_string_lossy(),
+        "npmSpec": trimmed,
         "manifest": manifest,
+        "requiredFields": required_fields,
     }))
 }
 
@@ -758,24 +767,32 @@ async fn install_sdk_shim<R: tauri::Runtime>(
     Ok(())
 }
 
+/// Resolve npm spec to the package directory name in node_modules.
+/// e.g. "@sliverp/qqbot" → "@sliverp/qqbot", "foo@1.2.3" → "foo",
+/// "@scope/name@1.0.0" → "@scope/name"
+fn resolve_npm_pkg_name(npm_spec: &str) -> String {
+    let first = npm_spec.split('@').next().unwrap_or(npm_spec);
+    if first.is_empty() && npm_spec.starts_with('@') {
+        // Scoped: "@scope/name" or "@scope/name@version"
+        let parts: Vec<&str> = npm_spec.splitn(3, '@').collect();
+        if parts.len() >= 3 {
+            // "@scope/name@version" → splitn(3,'@') = ["", "scope/name", "version"]
+            format!("@{}", parts[1])
+        } else {
+            // "@scope/name" (no version) → splitn(3,'@') = ["", "scope/name"]
+            npm_spec.to_string()
+        }
+    } else {
+        first.to_string()
+    }
+}
+
 /// Try to read plugin manifest from node_modules
 async fn read_plugin_manifest(
     plugin_dir: &std::path::Path,
     npm_spec: &str,
 ) -> serde_json::Value {
-    // Derive package name (strip version specifier)
-    let pkg_name = npm_spec.split('@').next().unwrap_or(npm_spec);
-    let pkg_name = if pkg_name.is_empty() && npm_spec.starts_with('@') {
-        // Scoped package: @scope/name@version
-        let parts: Vec<&str> = npm_spec.splitn(3, '@').collect();
-        if parts.len() >= 3 {
-            format!("@{}", parts[1])
-        } else {
-            npm_spec.to_string()
-        }
-    } else {
-        pkg_name.to_string()
-    };
+    let pkg_name = resolve_npm_pkg_name(npm_spec);
 
     // Try reading openclaw.plugin.json
     let manifest_path = plugin_dir
