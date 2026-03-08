@@ -191,7 +191,6 @@ export function useAutoScroll(
     }
 
     // Calculate scroll target based on mode
-    const maxScrollTop = element.scrollHeight - element.clientHeight;
     let targetScrollTop: number;
 
     if (isContentAwareRef.current) {
@@ -206,9 +205,24 @@ export function useAutoScroll(
 
       // max() naturally transitions from msg-at-top to content-follow
       const naturalTarget = Math.max(userMsgTarget, contentFollowTarget);
+
+      // Dynamically size spacer to provide JUST ENOUGH scroll room for the target.
+      // This avoids the huge empty space below short conversations.
+      // Required: maxScrollTop >= naturalTarget
+      //   contentEnd + spacerHeight + 1 - clientHeight >= naturalTarget
+      //   spacerHeight >= naturalTarget + clientHeight - contentEnd - 1
+      if (spacer) {
+        const requiredHeight = naturalTarget + element.clientHeight - contentEnd;
+        const newHeight = Math.max(IDLE_SPACER_HEIGHT, Math.ceil(requiredHeight));
+        spacer.style.minHeight = `${newHeight}px`;
+      }
+
+      // Read maxScrollTop AFTER spacer resize (forces one layout reflow per frame — normal for RAF)
+      const maxScrollTop = element.scrollHeight - element.clientHeight;
       targetScrollTop = Math.max(0, Math.min(naturalTarget, maxScrollTop));
     } else {
       // Normal mode: absolute bottom
+      const maxScrollTop = element.scrollHeight - element.clientHeight;
       targetScrollTop = maxScrollTop;
     }
 
@@ -418,12 +432,25 @@ export function useAutoScroll(
     }
     pendingScrollRef.current = false; // clear stale flag if content-aware took priority
 
-    // Content-aware mode: update cached user message position and start smooth animation.
-    // The spacer expands instantly (no CSS transition), so scrollHeight is correct and the
-    // RAF animation can reliably calculate the target. The animation smoothly scrolls the
-    // user message toward viewport top, then transitions to content-following as AI streams.
+    // Content-aware mode: update cached user message position, size spacer, start animation.
+    // The animation loop dynamically sizes the spacer each frame as content grows,
+    // but we also set it here for the initial frame (before the first RAF callback).
     if (isContentAwareRef.current && isAutoScrollEnabledRef.current) {
       updateLastUserMsgTop();
+
+      // Set initial spacer height so the first animation frame has correct scrollHeight
+      const el = containerRef.current;
+      const spacer = spacerRef.current;
+      if (el && spacer) {
+        const userMsgTarget = lastUserMsgTopRef.current > 0
+          ? lastUserMsgTopRef.current - MSG_TOP_GAP : 0;
+        const contentEnd = spacer.offsetTop;
+        const contentFollowTarget = contentEnd - el.clientHeight + CONTENT_BOTTOM_GAP;
+        const naturalTarget = Math.max(userMsgTarget, contentFollowTarget);
+        const requiredHeight = naturalTarget + el.clientHeight - contentEnd;
+        spacer.style.minHeight = `${Math.max(IDLE_SPACER_HEIGHT, Math.ceil(requiredHeight))}px`;
+      }
+
       if (isDebugMode()) {
         console.log(LOG, 'content-aware: start animation, msgTop=', lastUserMsgTopRef.current);
       }
@@ -466,8 +493,16 @@ export function useAutoScroll(
       // This matches ChatGPT/Claude behavior — scrolling back down does NOT
       // auto-resume streaming follow. Prevents the "scroll fight" where the
       // animation and user input compete for scroll position.
+      //
+      // IMPORTANT: Distinguish real user scroll-up from browser clamping.
+      // When the spacer shrinks (animation dynamic sizing or React re-render),
+      // scrollHeight decreases. If scrollTop > new maxScrollTop, the browser
+      // clamps scrollTop to maxScrollTop. After clamping, scrollTop === maxScrollTop.
+      // We must NOT interpret this as user scroll-up.
       if (scrollDelta < -5) {
-        if (isAutoScrollEnabledRef.current) {
+        const maxST = element.scrollHeight - element.clientHeight;
+        const wasClamped = Math.abs(currentScrollTop - maxST) < 2;
+        if (isAutoScrollEnabledRef.current && !wasClamped) {
           isAutoScrollEnabledRef.current = false;
           cancelAnimation();
           if (isDebugMode()) {
