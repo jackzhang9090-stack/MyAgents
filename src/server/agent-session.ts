@@ -467,6 +467,11 @@ function waitForTurnComplete(): Promise<void> {
   return new Promise(resolve => { resolveTurnComplete = resolve; });
 }
 
+/** 当前回合是否仍在进行中（包括 stop 后等待 SDK 真正收尾的窗口） */
+function isTurnInFlight(): boolean {
+  return isStreamingMessage || resolveTurnComplete !== null;
+}
+
 /** 中止持久 session：唤醒所有被阻塞的 Promise */
 function abortPersistentSession(): void {
   shouldAbortSession = true;
@@ -485,6 +490,41 @@ function abortPersistentSession(): void {
   signalTurnComplete();
   // 强制 subprocess 产出消息/错误，解除 for-await 阻塞
   querySession?.interrupt().catch(() => {});
+}
+
+/**
+ * Hard-abort the current session after an interrupt timeout and recover automatically.
+ * This prevents the persistent generator from remaining blocked at waitForTurnComplete().
+ */
+async function forceAbortCurrentTurnAndRecover(): Promise<void> {
+  console.warn('[agent] force-aborting session after interrupt timeout');
+  abortPersistentSession();
+
+  if (sessionTerminationPromise) {
+    try {
+      await sessionTerminationPromise;
+    } catch (error) {
+      console.warn('[agent] forced stop: session termination error:', error);
+    }
+  }
+
+  // Another control flow (reset/switch session) already took over.
+  if (!shouldAbortSession) {
+    return;
+  }
+
+  if (messageQueue.length > 0) {
+    console.log('[agent] forced stop: restarting session to drain queued messages');
+    setTimeout(() => {
+      startStreamingSession().catch((error) => {
+        console.error('[agent] forced stop: failed to restart session', error);
+      });
+    }, 0);
+    return;
+  }
+
+  console.log('[agent] forced stop: scheduling recovery pre-warm');
+  schedulePreWarm();
 }
 
 // ===== Interaction Scenario (unified system prompt) =====
@@ -2432,6 +2472,7 @@ function handleMessageStopped(): void {
   toolResultIndexToId.clear();
   childToolToParent.clear();
   imTextBlockIndices.clear();
+  clearCronTaskContext();
 
 
   // Only transition to idle if no queued messages waiting (same logic as handleMessageComplete)
@@ -3203,7 +3244,7 @@ export async function enqueueUserMessage(
 
   // Session is "busy" if AI is streaming OR there are pending messages in the queue.
   // This prevents config changes and turn-usage resets during the brief gap between turns.
-  const isSessionBusy = isStreamingMessage || messageQueue.length > 0;
+  const isSessionBusy = isTurnInFlight() || shouldAbortSession || isInterruptingResponse || messageQueue.length > 0;
 
   // Reset turn usage tracking — only for direct (non-queued) messages.
   // For queued messages, this is done in messageGenerator when the item is yielded,
@@ -3400,7 +3441,7 @@ export async function enqueueUserMessage(
   // but the generator hasn't picked up the next queued item yet.
   // IMPORTANT: Do NOT push to messages[] or broadcast here — queued messages
   // are rendered in the frontend only when they start executing (see messageGenerator).
-  if (isStreamingMessage || messageQueue.length > 0) {
+  if (isSessionBusy) {
     // Backend queue limit (defense-in-depth — frontend also enforces limit)
     const MAX_QUEUE_SIZE = 10;
     if (messageQueue.length >= MAX_QUEUE_SIZE) {
@@ -3513,14 +3554,7 @@ export async function waitForSessionIdle(
 }
 
 export async function interruptCurrentResponse(): Promise<boolean> {
-  if (!querySession) {
-    // 即使没有 querySession，如果 isStreamingMessage 为 true，也需要重置状态
-    if (isStreamingMessage) {
-      console.log('[agent] No querySession but streaming flag set, resetting state');
-      broadcast('chat:message-stopped', null);
-      handleMessageStopped();
-      return true;
-    }
+  if (!isTurnInFlight()) {
     return false;
   }
 
@@ -3528,8 +3562,17 @@ export async function interruptCurrentResponse(): Promise<boolean> {
     return true;
   }
 
+  if (!querySession) {
+    console.log('[agent] No querySession but turn is still marked active, resetting state');
+    broadcast('chat:message-stopped', null);
+    handleMessageStopped();
+    signalTurnComplete();
+    return true;
+  }
+
   isInterruptingResponse = true;
   try {
+    let shouldForceAbort = false;
     // 使用 Promise.race 添加 5 秒超时
     const interruptPromise = querySession.interrupt();
     const timeoutPromise = new Promise<void>((_, reject) => {
@@ -3540,11 +3583,14 @@ export async function interruptCurrentResponse(): Promise<boolean> {
       await Promise.race([interruptPromise, timeoutPromise]);
     } catch (error) {
       console.error('[agent] Interrupt error or timeout:', error);
-      // 超时或出错时也要清理状态，避免 UI 卡住
+      shouldForceAbort = true;
     }
 
     broadcast('chat:message-stopped', null);
     handleMessageStopped();
+    if (shouldForceAbort) {
+      void forceAbortCurrentTurnAndRecover();
+    }
     return true;
   } finally {
     isInterruptingResponse = false;

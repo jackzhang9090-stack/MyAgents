@@ -20,14 +20,23 @@ use crate::{ulog_info, ulog_error, ulog_debug};
 // ===== Bridge Sender Registry =====
 // Lets management API route inbound messages from Bridge → processing loop.
 
-static BRIDGE_SENDERS: OnceLock<Mutex<HashMap<String, mpsc::Sender<ImMessage>>>> = OnceLock::new();
+/// Registry entry: sender channel + plugin ID (for uninstall safety check).
+struct BridgeSenderEntry {
+    tx: mpsc::Sender<ImMessage>,
+    plugin_id: String,
+}
 
-fn get_registry() -> &'static Mutex<HashMap<String, mpsc::Sender<ImMessage>>> {
+static BRIDGE_SENDERS: OnceLock<Mutex<HashMap<String, BridgeSenderEntry>>> = OnceLock::new();
+
+fn get_registry() -> &'static Mutex<HashMap<String, BridgeSenderEntry>> {
     BRIDGE_SENDERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub async fn register_bridge_sender(bot_id: &str, tx: mpsc::Sender<ImMessage>) {
-    get_registry().lock().await.insert(bot_id.to_string(), tx);
+pub async fn register_bridge_sender(bot_id: &str, plugin_id: &str, tx: mpsc::Sender<ImMessage>) {
+    get_registry().lock().await.insert(bot_id.to_string(), BridgeSenderEntry {
+        tx,
+        plugin_id: plugin_id.to_string(),
+    });
 }
 
 pub async fn unregister_bridge_sender(bot_id: &str) {
@@ -35,7 +44,12 @@ pub async fn unregister_bridge_sender(bot_id: &str) {
 }
 
 pub async fn get_bridge_sender(bot_id: &str) -> Option<mpsc::Sender<ImMessage>> {
-    get_registry().lock().await.get(bot_id).cloned()
+    get_registry().lock().await.get(bot_id).map(|e| e.tx.clone())
+}
+
+/// Check if any running bot uses the given plugin_id.
+pub async fn is_plugin_in_use(plugin_id: &str) -> bool {
+    get_registry().lock().await.values().any(|e| e.plugin_id == plugin_id)
 }
 
 // ===== BridgeAdapter =====
@@ -56,6 +70,24 @@ impl BridgeAdapter {
             bridge_port,
             client,
             max_msg_length: 4096,
+        }
+    }
+
+    /// Fetch plugin capabilities from bridge and update max_msg_length.
+    /// Called once after bridge is verified healthy.
+    pub async fn sync_capabilities(&mut self) {
+        match self.client.get(self.url("/capabilities")).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(body) = resp.json::<serde_json::Value>().await {
+                    if let Some(limit) = body["textChunkLimit"].as_u64() {
+                        self.max_msg_length = limit as usize;
+                        ulog_info!("[bridge:{}] textChunkLimit = {}", self.plugin_id, limit);
+                    }
+                }
+            }
+            _ => {
+                ulog_debug!("[bridge:{}] Could not fetch capabilities, using defaults", self.plugin_id);
+            }
         }
     }
 
@@ -156,6 +188,7 @@ impl ImAdapter for BridgeAdapter {
         ulog_info!("[bridge:{}] Sending stop to bridge", self.plugin_id);
         let _ = self.client.post(self.url("/stop")).send().await;
     }
+
 
     async fn send_message(&self, chat_id: &str, text: &str) -> AdapterResult<()> {
         let body = json!({
@@ -470,8 +503,8 @@ pub async fn spawn_plugin_bridge<R: tauri::Runtime>(
         .arg(rust_port.to_string())
         .arg("--bot-id")
         .arg(bot_id)
-        .arg("--config")
-        .arg(&config_json)
+        // Pass config via env var to avoid leaking secrets in `ps` process listing
+        .env("BRIDGE_PLUGIN_CONFIG", &config_json)
         // Prevent system proxy (Clash/V2Ray) from intercepting localhost traffic
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env("no_proxy", "127.0.0.1,localhost")
@@ -544,15 +577,40 @@ pub async fn install_openclaw_plugin<R: tauri::Runtime>(
     let bun_path = find_bun_executable_pub(app_handle)
         .ok_or_else(|| "Bun executable not found".to_string())?;
 
+    // Validate npm_spec: must look like an npm package name (with optional scope/version).
+    // Reject file:, git:, http:, and path traversal attempts.
+    let trimmed = npm_spec.trim();
+    if trimmed.is_empty()
+        || trimmed.contains("..")
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('.')
+        || trimmed.contains("file:")
+        || trimmed.contains("git:")
+        || trimmed.contains("git+")
+        || trimmed.contains("http:")
+        || trimmed.contains("https:")
+    {
+        return Err(format!("Invalid npm spec '{}': only npm package names are allowed", npm_spec));
+    }
+
     // Derive plugin ID from npm spec (e.g. "@openclaw/channel-qqbot" → "channel-qqbot")
-    let plugin_id = npm_spec
+    let plugin_id = trimmed
         .split('/')
         .last()
-        .unwrap_or(npm_spec)
+        .unwrap_or(trimmed)
         .split('@')
         .next()
-        .unwrap_or(npm_spec)
+        .unwrap_or(trimmed)
         .to_string();
+
+    // Validate derived plugin_id (no path separators, no empty)
+    if plugin_id.is_empty()
+        || plugin_id.contains('/')
+        || plugin_id.contains('\\')
+        || plugin_id.contains("..")
+    {
+        return Err(format!("Invalid plugin ID derived from '{}': '{}'", npm_spec, plugin_id));
+    }
 
     let base_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -603,8 +661,8 @@ pub async fn install_openclaw_plugin<R: tauri::Runtime>(
         return Err(format!("bun add {} failed: {}", npm_spec, stderr));
     }
 
-    // Install plugin-sdk shim
-    install_sdk_shim(&base_dir).await?;
+    // Install plugin-sdk shim (copies from bundled resource files)
+    install_sdk_shim(app_handle, &base_dir).await?;
 
     // Try to read plugin manifest
     let manifest = read_plugin_manifest(&base_dir, npm_spec).await;
@@ -618,95 +676,82 @@ pub async fn install_openclaw_plugin<R: tauri::Runtime>(
     }))
 }
 
-/// Install the openclaw/plugin-sdk shim into the plugin's node_modules
-async fn install_sdk_shim(plugin_dir: &std::path::Path) -> Result<(), String> {
-    let shim_dir = plugin_dir.join("node_modules").join("openclaw");
-    let sdk_dir = shim_dir.join("plugin-sdk");
-
-    tokio::fs::create_dir_all(&sdk_dir)
-        .await
-        .map_err(|e| format!("Failed to create SDK shim dir: {}", e))?;
-
-    // package.json
-    let pkg_json = json!({
-        "name": "openclaw",
-        "version": "0.0.1-shim",
-        "exports": {
-            "./plugin-sdk": "./plugin-sdk/index.js"
+/// Find the SDK shim source directory (dev: source tree, prod: bundled resource)
+fn find_sdk_shim_dir<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) -> Option<PathBuf> {
+    // Production: bundled in resources
+    #[cfg(not(debug_assertions))]
+    {
+        if let Ok(resource_dir) = app_handle.path().resource_dir() {
+            let bundled = resource_dir.join("plugin-bridge-sdk-shim");
+            if bundled.exists() {
+                return Some(bundled);
+            }
         }
-    });
-    tokio::fs::write(
-        shim_dir.join("package.json"),
-        serde_json::to_string_pretty(&pkg_json).unwrap(),
-    )
-    .await
-    .map_err(|e| format!("Failed to write shim package.json: {}", e))?;
+    }
 
-    // plugin-sdk/index.js
-    let sdk_js = r#"
-// OpenClaw plugin-sdk shim for MyAgents
-export function emptyPluginConfigSchema() {
-  return { type: "object", properties: {}, additionalProperties: false };
+    // Development: source tree
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let project_root = std::path::Path::new(manifest_dir)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
+    let dev_path = project_root.join("src/server/plugin-bridge/sdk-shim");
+    if dev_path.exists() {
+        return Some(dev_path);
+    }
+
+    let _ = app_handle;
+    None
 }
 
-export function applyAccountNameToChannelSection(config, section, name) {
-  if (!config) config = {};
-  if (!config[section]) config[section] = {};
-  config[section].name = name;
-  return config;
-}
-
-export function deleteAccountFromConfigSection(config, section) {
-  if (config && config[section]) {
-    delete config[section];
-  }
-  return config || {};
-}
-
-export function setAccountEnabledInConfigSection(config, section, enabled) {
-  if (!config) config = {};
-  if (!config[section]) config[section] = {};
-  config[section].enabled = enabled;
-  return config;
-}
-"#;
-    tokio::fs::write(sdk_dir.join("index.js"), sdk_js.trim())
+/// Recursively copy a directory
+async fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    tokio::fs::create_dir_all(dst)
         .await
-        .map_err(|e| format!("Failed to write SDK shim index.js: {}", e))?;
+        .map_err(|e| format!("Failed to create dir {:?}: {}", dst, e))?;
 
-    // plugin-sdk/index.d.ts (minimal type declarations)
-    let sdk_dts = r#"
-export interface OpenClawPluginApi {
-  registerChannel(plugin: any): void;
-  config: any;
-  logger: any;
-}
-
-export interface OpenClawConfig {
-  [key: string]: any;
-}
-
-export interface ChannelPlugin {
-  id: string;
-  name: string;
-  gateway: any;
-  [key: string]: any;
-}
-
-export interface PluginRuntime {
-  channel: any;
-  [key: string]: any;
-}
-
-export function emptyPluginConfigSchema(): any;
-export function applyAccountNameToChannelSection(config: any, section: string, name: string): any;
-export function deleteAccountFromConfigSection(config: any, section: string): any;
-export function setAccountEnabledInConfigSection(config: any, section: string, enabled: boolean): any;
-"#;
-    tokio::fs::write(sdk_dir.join("index.d.ts"), sdk_dts.trim())
+    let mut entries = tokio::fs::read_dir(src)
         .await
-        .map_err(|e| format!("Failed to write SDK shim index.d.ts: {}", e))?;
+        .map_err(|e| format!("Failed to read dir {:?}: {}", src, e))?;
 
+    while let Some(entry) = entries.next_entry().await
+        .map_err(|e| format!("Failed to read entry in {:?}: {}", src, e))?
+    {
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let file_type = entry.file_type().await
+            .map_err(|e| format!("Failed to get file type for {:?}: {}", src_path, e))?;
+
+        if file_type.is_dir() {
+            Box::pin(copy_dir_recursive(&src_path, &dst_path)).await?;
+        } else {
+            tokio::fs::copy(&src_path, &dst_path)
+                .await
+                .map_err(|e| format!("Failed to copy {:?} → {:?}: {}", src_path, dst_path, e))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Install the openclaw/plugin-sdk shim into the plugin's node_modules.
+/// Copies from bundled resource files instead of hardcoded strings.
+async fn install_sdk_shim<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    plugin_dir: &std::path::Path,
+) -> Result<(), String> {
+    let shim_src = find_sdk_shim_dir(app_handle)
+        .ok_or_else(|| "SDK shim source directory not found".to_string())?;
+
+    let shim_dst = plugin_dir.join("node_modules").join("openclaw");
+
+    // Remove existing shim if present (ensure clean state)
+    if shim_dst.exists() {
+        let _ = tokio::fs::remove_dir_all(&shim_dst).await;
+    }
+
+    copy_dir_recursive(&shim_src, &shim_dst).await?;
+
+    ulog_info!("[bridge] SDK shim installed from {:?} → {:?}", shim_src, shim_dst);
     Ok(())
 }
 
@@ -759,6 +804,35 @@ async fn read_plugin_manifest(
     }
 
     json!({ "name": pkg_name })
+}
+
+/// Uninstall an OpenClaw plugin by removing its directory.
+/// Returns error if any running bot depends on the plugin.
+pub async fn uninstall_openclaw_plugin(plugin_id: &str) -> Result<(), String> {
+    let plugins_dir = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".myagents")
+        .join("openclaw-plugins")
+        .join(plugin_id);
+
+    if !plugins_dir.exists() {
+        return Err(format!("Plugin '{}' not found", plugin_id));
+    }
+
+    // Check if any running bot uses this plugin
+    if is_plugin_in_use(plugin_id).await {
+        return Err(format!(
+            "Cannot uninstall '{}': a running bot depends on it. Stop the bot first.",
+            plugin_id
+        ));
+    }
+
+    tokio::fs::remove_dir_all(&plugins_dir)
+        .await
+        .map_err(|e| format!("Failed to remove plugin directory: {}", e))?;
+
+    ulog_info!("[bridge] Plugin '{}' uninstalled successfully", plugin_id);
+    Ok(())
 }
 
 /// List all installed OpenClaw plugins

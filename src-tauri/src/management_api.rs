@@ -556,17 +556,37 @@ struct BridgeMessagePayload {
 
 async fn handle_bridge_message(
     Json(payload): Json<BridgeMessagePayload>,
-) -> Json<serde_json::Value> {
+) -> (axum::http::StatusCode, Json<serde_json::Value>) {
     use crate::im::bridge;
     use crate::im::types::{ImMessage, ImPlatform, ImSourceType};
+
+    // Validate plugin_id: reject empty, path separators, and built-in platform names
+    let plugin_id = payload.plugin_id.trim().to_string();
+    if plugin_id.is_empty()
+        || plugin_id.contains('/')
+        || plugin_id.contains('\\')
+        || plugin_id.contains(':')
+        || matches!(plugin_id.as_str(), "telegram" | "feishu" | "dingtalk")
+    {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": format!("Invalid plugin_id: '{}'", plugin_id)
+            })),
+        );
+    }
 
     let sender = match bridge::get_bridge_sender(&payload.bot_id).await {
         Some(tx) => tx,
         None => {
-            return Json(serde_json::json!({
-                "ok": false,
-                "error": format!("No bridge sender registered for bot_id={}", payload.bot_id)
-            }));
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "error": format!("No bridge sender registered for bot_id={}", payload.bot_id)
+                })),
+            );
         }
     };
 
@@ -583,7 +603,7 @@ async fn handle_bridge_message(
         sender_id: payload.sender_id,
         sender_name: payload.sender_name,
         source_type,
-        platform: ImPlatform::OpenClaw(payload.plugin_id),
+        platform: ImPlatform::OpenClaw(plugin_id),
         timestamp: chrono::Utc::now(),
         attachments: Vec::new(),
         media_group_id: None,
@@ -592,10 +612,16 @@ async fn handle_bridge_message(
     };
 
     match sender.send(msg).await {
-        Ok(_) => Json(serde_json::json!({ "ok": true })),
-        Err(e) => Json(serde_json::json!({
-            "ok": false,
-            "error": format!("Failed to send message to processing loop: {}", e)
-        })),
+        Ok(_) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({ "ok": true })),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": format!("Failed to send message to processing loop: {}", e)
+            })),
+        ),
     }
 }

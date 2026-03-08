@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, ExternalLink, FolderOpen, FolderPlus, Loader2, Plus, Puzzle, Trash2 } from 'lucide-react';
 import { track } from '@/analytics';
 import { isTauriEnvironment } from '@/utils/browserMock';
@@ -7,6 +7,7 @@ import { useConfig } from '@/hooks/useConfig';
 import { shortenPathForDisplay } from '@/utils/pathDetection';
 import CustomSelect from '@/components/CustomSelect';
 import type { ImBotConfig, ImBotStatus, ImPlatform, InstalledPlugin } from '../../../shared/types/im';
+import { findPromotedPlugin } from './promotedPlugins';
 
 // ===== Config Field Editor =====
 
@@ -77,10 +78,12 @@ function ConfigFieldEditor({
 
 function SchemaConfigInputs({
     schema,
+    requiredKeys,
     values,
     onChange,
 }: {
     schema: Record<string, { type?: string; description?: string }>;
+    requiredKeys: Set<string>;
     values: Record<string, string>;
     onChange: (values: Record<string, string>) => void;
 }) {
@@ -89,16 +92,18 @@ function SchemaConfigInputs({
         <div className="space-y-3">
             {keys.map((key) => {
                 const field = schema[key];
+                const isRequired = requiredKeys.has(key);
                 return (
                     <div key={key}>
                         <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">
                             {key}
+                            {isRequired && <span className="ml-1 text-[var(--error)]">*</span>}
                         </label>
                         {field.description && (
                             <p className="mb-1 text-xs text-[var(--ink-muted)]">{field.description}</p>
                         )}
                         <input
-                            type="text"
+                            type={/secret|token|password|key/i.test(key) ? 'password' : 'text'}
                             value={values[key] || ''}
                             onChange={(e) => onChange({ ...values, [key]: e.target.value })}
                             placeholder={`输入 ${key}`}
@@ -136,10 +141,17 @@ export default function OpenClawWizard({
     // Derive config approach from manifest
     const schemaProperties = plugin.manifest?.configSchema?.properties;
     const hasSchema = schemaProperties && Object.keys(schemaProperties).length > 0;
+    const schemaRequiredKeys = useMemo(
+        () => new Set(plugin.manifest?.configSchema?.required ?? []),
+        [plugin.manifest?.configSchema?.required],
+    );
 
-    // Config state — pre-populate from requiredFields extracted from plugin source
+    // Config state — pre-populate from requiredFields extracted from plugin source.
+    // If schema is available, requiredFields are already covered by SchemaConfigInputs,
+    // so don't duplicate them in customFields.
     const [schemaValues, setSchemaValues] = useState<Record<string, string>>({});
     const [customFields, setCustomFields] = useState<ConfigField[]>(() => {
+        if (hasSchema) return [{ key: '', value: '' }]; // Schema handles known fields
         const required = plugin.requiredFields;
         if (required && required.length > 0) {
             return required.map((key) => ({ key, value: '' }));
@@ -213,7 +225,7 @@ export default function OpenClawWizard({
         } finally {
             if (isMountedRef.current) setCreatingWorkspace(false);
         }
-    }, [workspaceChoice, workspaceName, selectedExistingPath, refreshConfig]);
+    }, [workspaceChoice, workspaceName, selectedExistingPath, addProject, refreshConfig]);
 
     const handleStart = useCallback(async () => {
         if (!isTauriEnvironment()) return;
@@ -288,19 +300,21 @@ export default function OpenClawWizard({
         icon: <FolderOpen className="h-3.5 w-3.5" />,
     }));
 
-    const pluginName = plugin.manifest?.name || plugin.pluginId;
-    const pluginDesc = plugin.manifest?.description || '';
+    const promoted = findPromotedPlugin(plugin.pluginId);
+    const pluginName = promoted?.name || plugin.manifest?.name || plugin.pluginId;
+    const pluginDesc = promoted?.description || plugin.manifest?.description || '';
     const pluginConfig = buildConfig();
     const configCount = Object.keys(pluginConfig).length;
 
-    // Step 1 validation: any row with a key must also have a value
+    // Step 1 validation: custom fields with a key must have a value;
+    // schema fields only block if they are in the JSON Schema `required` array.
     const hasIncompleteFields = customFields.some(f => f.key.trim() && !f.value.trim());
-    const hasIncompleteSchema = hasSchema && Object.entries(schemaValues).some(([, v]) => !v.trim())
-        || (hasSchema && Object.keys(schemaProperties!).some(k => !schemaValues[k]?.trim()));
+    const hasIncompleteSchema = hasSchema
+        && Array.from(schemaRequiredKeys).some(k => !schemaValues[k]?.trim());
 
     const totalSteps = 3;
     const stepLabel = step === 1 ? '配置插件' : step === 2 ? '设置工作区' : '启动 Bot';
-    const platformColor = '#8B5CF6'; // Purple for community plugins
+    const platformColor = promoted?.platformColor || '#8B5CF6';
 
     return (
         <div className="space-y-6">
@@ -344,9 +358,13 @@ export default function OpenClawWizard({
                     {/* Plugin info card */}
                     <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                         <div className="flex items-start gap-4">
-                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-[var(--accent-warm-subtle)]">
-                                <Puzzle className="h-5 w-5 text-[var(--accent-warm)]" />
-                            </div>
+                            {promoted ? (
+                                <img src={promoted.icon} alt={pluginName} className="h-10 w-10 shrink-0 rounded-[var(--radius-md)]" />
+                            ) : (
+                                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-[var(--accent-warm-subtle)]">
+                                    <Puzzle className="h-5 w-5 text-[var(--accent-warm)]" />
+                                </div>
+                            )}
                             <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2">
                                     <p className="text-sm font-semibold text-[var(--ink)]">{pluginName}</p>
@@ -378,9 +396,11 @@ export default function OpenClawWizard({
 
                     {/* Config section */}
                     <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
-                        <h3 className="text-sm font-medium text-[var(--ink)]">插件配置</h3>
+                        <h3 className="text-sm font-medium text-[var(--ink)]">
+                            {promoted?.setupGuide?.credentialTitle || '插件配置'}
+                        </h3>
                         <p className="mt-1.5 text-xs text-[var(--ink-muted)]">
-                            输入插件需要的配置参数（如 appId、clientSecret 等）
+                            {promoted?.setupGuide?.credentialHint || '输入插件需要的配置参数（如 appId、clientSecret 等）'}
                         </p>
 
                         <div className="mt-4">
@@ -389,6 +409,7 @@ export default function OpenClawWizard({
                                 <div className="space-y-4">
                                     <SchemaConfigInputs
                                         schema={schemaProperties!}
+                                        requiredKeys={schemaRequiredKeys}
                                         values={schemaValues}
                                         onChange={setSchemaValues}
                                     />
@@ -574,9 +595,13 @@ export default function OpenClawWizard({
 
                         <div className="mt-4 space-y-3">
                             <div className="flex items-center gap-3 rounded-lg border border-[var(--line)] p-3">
-                                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent-warm-subtle)]">
-                                    <Puzzle className="h-4 w-4 text-[var(--accent-warm)]" />
-                                </div>
+                                {promoted ? (
+                                    <img src={promoted.icon} alt={pluginName} className="h-8 w-8 shrink-0 rounded-[var(--radius-sm)]" />
+                                ) : (
+                                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent-warm-subtle)]">
+                                        <Puzzle className="h-4 w-4 text-[var(--accent-warm)]" />
+                                    </div>
+                                )}
                                 <div>
                                     <p className="text-sm font-medium text-[var(--ink)]">{pluginName}</p>
                                     {plugin.packageVersion && (

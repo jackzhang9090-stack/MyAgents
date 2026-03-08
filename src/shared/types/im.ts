@@ -122,7 +122,7 @@ export interface InstalledPlugin {
     name?: string;
     description?: string;
     channels?: string[];
-    configSchema?: { type: string; properties: Record<string, { type?: string; description?: string }> };
+    configSchema?: { type: string; properties: Record<string, { type?: string; description?: string }>; required?: string[] };
   } | null;
   packageVersion?: string;
   homepage?: string;

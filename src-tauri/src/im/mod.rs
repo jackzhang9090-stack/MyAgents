@@ -499,12 +499,14 @@ pub async fn start_im_bot<R: Runtime>(
             .await?;
 
             // Register bridge sender for inbound message routing
-            bridge::register_bridge_sender(&bot_id, msg_tx.clone()).await;
+            bridge::register_bridge_sender(&bot_id, &channel_id, msg_tx.clone()).await;
 
-            let adapter = Arc::new(AnyAdapter::Bridge(Arc::new(BridgeAdapter::new(
+            let mut bridge_adapter = BridgeAdapter::new(
                 channel_id.clone(),
                 bp.port,
-            ))));
+            );
+            bridge_adapter.sync_capabilities().await;
+            let adapter = Arc::new(AnyAdapter::Bridge(Arc::new(bridge_adapter)));
             bridge_process_handle = Some(bp);
             adapter
         }
@@ -548,12 +550,41 @@ pub async fn start_im_bot<R: Runtime>(
     // Start health persist loop
     let health_handle = health.start_persist_loop(shutdown_rx.clone());
 
-    // Start Telegram long-poll loop
+    // Start platform listen loop (long-poll for Telegram, health watchdog for Bridge)
     let adapter_clone = Arc::clone(&adapter);
     let poll_shutdown_rx = shutdown_rx.clone();
     let poll_handle = tokio::spawn(async move {
         adapter_clone.listen_loop(poll_shutdown_rx).await;
     });
+
+    // Watch for unexpected listen_loop exit (e.g., Bridge health check failures).
+    // If listen_loop ends but shutdown was not signalled, mark bot as error.
+    {
+        let health_for_watcher = health.clone();
+        let mut watcher_shutdown_rx = shutdown_rx.clone();
+        let poll_handle_watcher = poll_handle.abort_handle();
+        let bot_id_for_watcher = bot_id.clone();
+        let shutdown_tx_for_watcher = shutdown_tx.clone();
+        tokio::spawn(async move {
+            // Wait until either shutdown is signalled or the poll task finishes
+            loop {
+                tokio::select! {
+                    _ = watcher_shutdown_rx.changed() => {
+                        if *watcher_shutdown_rx.borrow() { return; } // Normal shutdown
+                    }
+                    _ = async { while !poll_handle_watcher.is_finished() { tokio::time::sleep(Duration::from_secs(2)).await; } } => {
+                        // poll_handle finished without shutdown signal — bridge/adapter died
+                        ulog_error!("[im] Listen loop for bot {} exited unexpectedly, marking as error", bot_id_for_watcher);
+                        health_for_watcher.set_status(ImStatus::Error).await;
+                        health_for_watcher.set_error(Some("Platform connection lost (listen loop exited)".to_string())).await;
+                        // Signal shutdown so the processing loop also stops cleanly
+                        let _ = shutdown_tx_for_watcher.send(true);
+                        return;
+                    }
+                }
+            }
+        });
+    }
 
     // Start approval callback handler
     let pending_approvals_for_handler = Arc::clone(&pending_approvals);
@@ -2956,6 +2987,15 @@ fn persist_bot_config_patch(bot_id: &str, patch: &BotConfigPatch) -> Result<(), 
 
     // NOTE: mcp_servers_json is NOT persisted (runtime only, pushed to Sidecar)
 
+    // OpenClaw plugin config (v0.1.38)
+    if let Some(ref val) = patch.openclaw_plugin_config {
+        if val.is_null() {
+            if let Some(o) = bot.as_object_mut() { o.remove("openclawPluginConfig"); }
+        } else {
+            bot["openclawPluginConfig"] = val.clone();
+        }
+    }
+
     // Group chat fields (v0.1.28)
     if let Some(ref perms) = patch.group_permissions {
         bot["groupPermissions"] = serde_json::json!(perms);
@@ -3046,7 +3086,7 @@ async fn update_bot_config_internal<R: Runtime>(
         group_permissions: patch_group_perms.clone(),
         group_activation: patch_group_activation.clone(),
         group_tools_deny: patch_group_tools_deny.clone(),
-        openclaw_plugin_config: None, // Not hot-reloadable yet
+        openclaw_plugin_config: patch.openclaw_plugin_config.clone(),
     };
     let bid_for_disk = bid.clone();
     tokio::task::spawn_blocking(move || {
@@ -3453,4 +3493,10 @@ pub async fn cmd_install_openclaw_plugin(
 #[tauri::command]
 pub async fn cmd_list_openclaw_plugins() -> Result<Vec<serde_json::Value>, String> {
     bridge::list_openclaw_plugins().await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_uninstall_openclaw_plugin(pluginId: String) -> Result<(), String> {
+    bridge::uninstall_openclaw_plugin(&pluginId).await
 }

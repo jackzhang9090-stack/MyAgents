@@ -522,6 +522,17 @@ export default function TabProvider({
             return null;
         });
     }, []);
+
+    const recoverStreamingUi = useCallback((status: 'stopped' | 'failed') => {
+        moveStreamingToHistory(status);
+        flushSync(() => {
+            isStreamingRef.current = false;
+            setIsLoading(false);
+            setSessionState('idle');
+            setSystemStatus(null);
+        });
+    }, [moveStreamingToHistory]);
+
     // Handle SSE events
     const handleSseEvent = useCallback((eventName: string, data: unknown) => {
         switch (eventName) {
@@ -1510,9 +1521,7 @@ export default function TabProvider({
                 stopTimeoutRef.current = setTimeout(() => {
                     if (isStreamingRef.current) {
                         console.warn(`[TabProvider ${tabId}] Stop timeout - forcing UI recovery`);
-                        isStreamingRef.current = false;
-                        setIsLoading(false);
-                        setSystemStatus(null);
+                        recoverStreamingUi('stopped');
                     }
                     // Also recover from 'stopping' state if SSE confirmation never arrived
                     setSessionState(prev => prev === 'stopping' ? 'idle' : prev);
@@ -1521,19 +1530,16 @@ export default function TabProvider({
                 return true;
             }
             // POST failed (success=false), recover UI
-            setSessionState('idle');
+            recoverStreamingUi('stopped');
             return false;
         } catch (error) {
             console.error(`[TabProvider ${tabId}] Stop response failed:`, error);
             // 请求失败也强制恢复 UI
-            isStreamingRef.current = false;
-            setIsLoading(false);
-            setSessionState('idle');  // Reset session state on error
-            setSystemStatus(null);
+            recoverStreamingUi('failed');
             return false;
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
-    }, [tabId]);
+    }, [recoverStreamingUi, tabId]);
 
     // Load session from history
     // Options:

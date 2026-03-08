@@ -9,7 +9,9 @@
  *   --port <number>       HTTP server port for Rust → Bridge communication
  *   --rust-port <number>  Management API port for Bridge → Rust communication
  *   --bot-id <string>     Bot ID for message routing
- *   --config <json>       Plugin configuration JSON
+ *
+ * Env:
+ *   BRIDGE_PLUGIN_CONFIG  Plugin configuration JSON (env var to avoid leaking secrets in `ps`)
  */
 
 import { createCompatApi, type CapturedPlugin } from './compat-api';
@@ -24,7 +26,6 @@ const { values: args } = parseArgs({
     'port': { type: 'string' },
     'rust-port': { type: 'string' },
     'bot-id': { type: 'string' },
-    'config': { type: 'string' },
   },
 });
 
@@ -32,7 +33,8 @@ const pluginDir = args['plugin-dir'];
 const port = parseInt(args['port'] || '0', 10);
 const rustPort = parseInt(args['rust-port'] || '0', 10);
 const botId = args['bot-id'] || '';
-const pluginConfig = JSON.parse(args['config'] || '{}');
+// Read config from env var (not CLI arg) to avoid leaking secrets in process listing
+const pluginConfig = JSON.parse(process.env.BRIDGE_PLUGIN_CONFIG || '{}');
 
 if (!pluginDir || !port || !rustPort || !botId) {
   console.error('[plugin-bridge] Missing required args: --plugin-dir, --port, --rust-port, --bot-id');
@@ -44,6 +46,7 @@ console.log(`[plugin-bridge] Starting: plugin-dir=${pluginDir} port=${port} rust
 let capturedPlugin: CapturedPlugin | null = null;
 let pluginName = 'unknown';
 let gatewayError: string | null = null;
+let gatewayStarted = false; // true once startAccount() has been invoked
 
 async function loadPlugin() {
   // Create compat API and runtime for plugin registration
@@ -134,7 +137,15 @@ async function loadPlugin() {
     account = { accountId: 'default', enabled: true, ...pluginConfig };
   }
 
-  console.log(`[plugin-bridge] Resolved account:`, JSON.stringify(account));
+  // Log account with secrets redacted
+  const redactedAccount = Object.fromEntries(
+    Object.entries(account).map(([k, v]) =>
+      /secret|token|password|key/i.test(k) && typeof v === 'string'
+        ? [k, v.slice(0, 4) + '***']
+        : [k, v]
+    )
+  );
+  console.log(`[plugin-bridge] Resolved account:`, JSON.stringify(redactedAccount));
 
   // Wrap outbound.sendText/sendMedia if top-level handlers are missing
   // OpenClaw plugins put send functions under plugin.outbound with signature:
@@ -160,6 +171,10 @@ async function loadPlugin() {
     };
     console.log('[plugin-bridge] Wrapped outbound.sendMedia as sendMedia handler');
   }
+  // Store textChunkLimit from outbound config for max_message_length
+  if (outbound?.textChunkLimit && typeof outbound.textChunkLimit === 'number') {
+    console.log(`[plugin-bridge] Plugin textChunkLimit: ${outbound.textChunkLimit}`);
+  }
 
   // Validate credentials before starting gateway
   // Check if the plugin's isConfigured function reports the account as configured
@@ -171,31 +186,6 @@ async function loadPlugin() {
       console.error(`[plugin-bridge] ${errMsg}`);
       gatewayError = errMsg;
       return; // Don't start gateway — credentials are missing
-    }
-  }
-
-  // For QQ Bot specifically, try to get an access token to validate credentials early
-  const appId = String(account.appId || '');
-  const clientSecret = String(account.clientSecret || '');
-  if (appId && clientSecret) {
-    try {
-      console.log(`[plugin-bridge] Validating credentials (appId=${appId})...`);
-      const resp = await fetch('https://bots.qq.com/app/getAppAccessToken', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ appId, clientSecret }),
-      });
-      const data = await resp.json() as { access_token?: string; message?: string };
-      if (!resp.ok || !data.access_token) {
-        const errMsg = `Credential validation failed: ${data.message || `HTTP ${resp.status}`}`;
-        console.error(`[plugin-bridge] ${errMsg}`);
-        gatewayError = errMsg;
-        return; // Don't start gateway with bad credentials
-      }
-      console.log(`[plugin-bridge] Credentials validated successfully`);
-    } catch (err) {
-      console.warn(`[plugin-bridge] Credential validation network error (will try gateway anyway):`, err);
-      // Don't block gateway start on network errors — gateway has its own retry logic
     }
   }
 
@@ -215,6 +205,7 @@ async function loadPlugin() {
     };
 
     // Don't await — let the gateway run in background (it may be long-lived)
+    gatewayStarted = true;
     (startAccount as (ctx: Record<string, unknown>) => Promise<void>)(ctx)
       .then(() => console.log(`[plugin-bridge] Plugin gateway started`))
       .catch((err: unknown) => {
@@ -225,6 +216,9 @@ async function loadPlugin() {
 
     // Store abort controller for graceful shutdown
     (globalThis as Record<string, unknown>).__bridgeAbort = abortController;
+  } else {
+    // No gateway — plugin is a send-only channel, mark as ready immediately
+    gatewayStarted = true;
   }
 }
 
@@ -244,8 +238,27 @@ const server = Bun.serve({
         ok: !gatewayError,
         pluginName,
         pluginId: capturedPlugin?.id || 'unknown',
-        ready: !!capturedPlugin && !gatewayError,
+        ready: !!capturedPlugin && !gatewayError && gatewayStarted,
         error: gatewayError || undefined,
+      });
+    }
+
+    if (path === '/capabilities') {
+      const outbound = capturedPlugin?.raw?.outbound as Record<string, unknown> | undefined;
+      const capabilities = capturedPlugin?.raw?.capabilities as Record<string, unknown> | undefined;
+      return Response.json({
+        pluginId: capturedPlugin?.id || 'unknown',
+        textChunkLimit: outbound?.textChunkLimit ?? 4096,
+        chunkerMode: outbound?.chunkerMode ?? 'text',
+        deliveryMode: outbound?.deliveryMode ?? 'direct',
+        capabilities: {
+          chatTypes: capabilities?.chatTypes ?? ['direct'],
+          media: capabilities?.media ?? false,
+          reactions: capabilities?.reactions ?? false,
+          threads: capabilities?.threads ?? false,
+          edit: capabilities?.edit ?? false,
+          blockStreaming: capabilities?.blockStreaming ?? false,
+        },
       });
     }
 
@@ -313,32 +326,27 @@ const server = Bun.serve({
     }
 
     if (path === '/validate-credentials' && req.method === 'POST') {
-      const body = await req.json() as Record<string, unknown>;
-      const appId = String(body.appId || '');
-      const clientSecret = String(body.clientSecret || '');
-
-      if (!appId || !clientSecret) {
-        return Response.json({ ok: false, error: 'Missing appId or clientSecret' }, { status: 400 });
+      // Generic credential validation using the plugin's own isConfigured() check
+      if (!capturedPlugin) {
+        return Response.json({ ok: false, error: 'Plugin not loaded yet' }, { status: 503 });
       }
-
+      const configCheck = capturedPlugin.raw?.config as Record<string, unknown> | undefined;
+      if (typeof configCheck?.isConfigured !== 'function') {
+        // Plugin has no isConfigured — assume credentials are fine if plugin loaded
+        return Response.json({ ok: true, message: 'Plugin has no credential validator (assumed valid)' });
+      }
       try {
-        // Try to get an access token from QQ Bot API to validate credentials
-        const resp = await fetch('https://bots.qq.com/app/getAppAccessToken', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ appId, clientSecret }),
-        });
-
-        const data = await resp.json() as { access_token?: string; expires_in?: number; code?: number; message?: string };
-
-        if (resp.ok && data.access_token) {
-          return Response.json({ ok: true, message: 'Credentials valid' });
+        const body = await req.json() as Record<string, unknown>;
+        // Build a temporary account-like object from the provided credentials
+        const tempAccount = { accountId: 'default', enabled: true, ...body };
+        const configured = (configCheck.isConfigured as (a: unknown) => boolean)(tempAccount);
+        if (configured) {
+          return Response.json({ ok: true, message: 'Credentials valid (isConfigured passed)' });
         } else {
-          const errMsg = data.message || `HTTP ${resp.status}`;
-          return Response.json({ ok: false, error: `QQ Bot API: ${errMsg}` });
+          return Response.json({ ok: false, error: 'Plugin reports credentials incomplete' });
         }
       } catch (err) {
-        return Response.json({ ok: false, error: `Network error: ${err instanceof Error ? err.message : String(err)}` }, { status: 500 });
+        return Response.json({ ok: false, error: `Validation error: ${err instanceof Error ? err.message : String(err)}` }, { status: 500 });
       }
     }
 

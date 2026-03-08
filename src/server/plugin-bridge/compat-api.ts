@@ -72,9 +72,14 @@ export function createCompatApi(config: Record<string, unknown>) {
     runtime: null as unknown,
 
     // Other OpenClaw API methods — no-op stubs
+    // Plugins may call any of these during register(); must not throw.
     registerTool() {},
     registerAgent() {},
     registerSkill() {},
+    registerHook() {},
+    registerCli() {},
+    registerAction() {},
+    registerProvider() {},
 
     /**
      * Get the captured plugin after registration.

@@ -51,6 +51,7 @@ export default function ImSettings() {
         case 'platform-select':
             return (
                 <PlatformSelect
+                    botConfigs={botConfigs}
                     onSelect={(platform) => {
                         setView({ type: 'wizard', platform });
                     }}
