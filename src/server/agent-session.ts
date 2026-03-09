@@ -1255,6 +1255,11 @@ async function handleAskUserQuestion(
   const questionInput = input;
 
   // Broadcast AskUserQuestion request to frontend
+  // Short-circuit if already aborted (addEventListener won't fire for past events)
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+
   broadcast('ask-user-question:request', {
     requestId,
     questions: questionInput.questions,
@@ -1340,6 +1345,11 @@ async function handleExitPlanMode(
 
   const requestId = `exitplan_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
+  // Short-circuit if already aborted (addEventListener won't fire for past events)
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+
   broadcast('exit-plan-mode:request', { requestId, plan, allowedPrompts });
 
   return new Promise((resolve, reject) => {
@@ -1400,6 +1410,11 @@ async function handleEnterPlanMode(
   console.log('[EnterPlanMode] Requesting user approval');
 
   const requestId = `enterplan_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  // Short-circuit if already aborted (addEventListener won't fire for past events)
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
 
   broadcast('enter-plan-mode:request', { requestId });
 
@@ -4110,7 +4125,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     apiWatchdogId = setInterval(() => {
       // Only check during active turns (not pre-warm, not idle between turns)
       if (!isStreamingMessage || isPreWarming) return;
-      if (!watchdogFired && pendingTools === 0 && Date.now() - lastSdkEventAt > API_WATCHDOG_TIMEOUT_MS) {
+      // Also require the current turn to have been running for > timeout duration.
+      // This prevents false positives when a new turn just started but lastSdkEventAt
+      // is stale from the previous turn (idle gap between turns).
+      const turnRunningLongEnough = currentTurnStartTime && Date.now() - currentTurnStartTime > API_WATCHDOG_TIMEOUT_MS;
+      if (!watchdogFired && turnRunningLongEnough && pendingTools === 0 && Date.now() - lastSdkEventAt > API_WATCHDOG_TIMEOUT_MS) {
         watchdogFired = true;
         console.error(`[agent] API watchdog: no SDK event for ${API_WATCHDOG_TIMEOUT_MS / 1000}s with no pending tools — aborting`);
         broadcast('chat:agent-error', {
