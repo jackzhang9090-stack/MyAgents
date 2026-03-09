@@ -4734,8 +4734,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           }
         }
       } else if (sdkMessage.type === 'result') {
-        // Turn complete — reset pending tool counter
+        // Turn complete — reset watchdog state for next turn
         pendingTools = 0;
+        watchdogFired = false;
         // Extract token usage from result message
         // SDK result contains modelUsage (per-model stats) and/or usage (aggregate)
         // This is the authoritative source for token statistics

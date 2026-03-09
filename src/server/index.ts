@@ -3185,6 +3185,9 @@ async function main() {
             wav: 'audio/wav',
             ogg: 'audio/ogg',
             webm: 'audio/webm',
+            opus: 'audio/opus',
+            aac: 'audio/aac',
+            m4a: 'audio/mp4',
           };
           const mimeType = mimeTypes[ext || ''] || 'audio/mpeg';
 

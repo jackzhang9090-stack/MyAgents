@@ -162,9 +162,9 @@ const ProcessRow = memo(function ProcessRow({
     let subLabel = '';
 
     if (isThinking) {
-        const durationSec = block.thinkingDurationMs ? Math.round(block.thinkingDurationMs / 1000) : 0;
+        const durationSec = block.thinkingDurationMs ? Math.floor(block.thinkingDurationMs / 1000) : 0;
         if (isThinkingActive) {
-            const elapsedSec = thinkingElapsed > 0 ? Math.round(thinkingElapsed / 1000) : 0;
+            const elapsedSec = thinkingElapsed > 0 ? Math.floor(thinkingElapsed / 1000) : 0;
             mainLabel = elapsedSec > 0 ? `思考中… (${elapsedSec}s)` : '思考中…';
             icon = <Loader2 className="size-4 animate-spin" />;
         } else if (block.isFailed) {
