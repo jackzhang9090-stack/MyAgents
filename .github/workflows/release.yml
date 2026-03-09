@@ -75,6 +75,9 @@ jobs:
           cp "$SDK_SRC"/*.wasm "$SDK_DEST/"
           cp -R "$SDK_SRC/vendor" "$SDK_DEST/"
 
+      - name: Build frontend
+        run: npm run build:web
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
