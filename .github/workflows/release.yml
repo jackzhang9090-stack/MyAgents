@@ -64,7 +64,8 @@ jobs:
           fi
 
           mkdir -p src-tauri/binaries
-          curl -fsSL "https://github.com/oven-sh/bun/releases/latest/download/bun-darwin-${BUN_ARCH}.zip" -o bun.zip
+          # Use fixed version to avoid download issues
+          curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v1.1.0/bun-darwin-${BUN_ARCH}.zip" -o bun.zip
           unzip -o bun.zip -d src-tauri/binaries/
           mv src-tauri/binaries/bun-darwin-${BUN_ARCH}/bun src-tauri/binaries/bun-${{ matrix.target }}
           rm -rf src-tauri/binaries/bun-darwin-${BUN_ARCH} bun.zip
