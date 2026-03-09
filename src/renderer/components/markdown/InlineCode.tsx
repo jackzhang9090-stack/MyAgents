@@ -37,7 +37,7 @@ function AudioPlayButton({ filePath }: { filePath: string }) {
         <button
             type="button"
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggle(); }}
-            className="ml-1 inline-flex size-[18px] shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-white transition-colors hover:bg-[var(--accent-hover)] align-middle"
+            className="ml-1 inline-flex size-[18px] shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-white transition-colors hover:bg-[var(--accent-warm-hover)] align-middle"
             title={isActive ? '停止播放' : '播放音频'}
         >
             {isActive
@@ -57,9 +57,6 @@ export default function InlineCode({ children }: InlineCodeProps) {
         return <code className={BASE_CLASS}>{children}</code>;
     }
 
-    // Check if this is an audio file path
-    const isAudio = isAudioPath(text);
-
     // Ask context for cached result (may trigger a batched backend request)
     const pathInfo = fileAction.checkPath(text);
 
@@ -67,6 +64,9 @@ export default function InlineCode({ children }: InlineCodeProps) {
         // Not yet resolved or does not exist → plain code
         return <code className={BASE_CLASS}>{children}</code>;
     }
+
+    // Check audio after existence confirmed (avoid wasted computation on non-existent paths)
+    const isAudio = isAudioPath(text);
 
     // Path exists — render interactive
     const handleClick = (e: React.MouseEvent) => {

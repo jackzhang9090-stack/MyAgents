@@ -89,7 +89,7 @@ function AudioPlayerBar({ filePath }: { filePath: string }) {
       <button
         type="button"
         onClick={handleToggle}
-        className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-white transition-colors hover:bg-[var(--accent-hover)]"
+        className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-white transition-colors hover:bg-[var(--accent-warm-hover)]"
       >
         {isActive
           ? <Square className="size-2.5 fill-current" />
