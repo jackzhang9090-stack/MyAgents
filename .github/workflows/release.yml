@@ -1,25 +1,12 @@
 name: Release (Disabled)
 
-# === WORKFLOW DISABLED ===
-# 此 workflow 已禁用，改用本地 build_macos.sh + publish_release.sh 发布
-# 如需重新启用，将 on: 部分改回：
-#   on:
-#     push:
-#       tags:
-#         - 'v*'
-#     workflow_dispatch:
-#       inputs:
-#         version:
-#           description: 'Version to release'
-#           required: true
-#           type: string
-# === WORKFLOW DISABLED ===
-
 on:
-  # 使用永远不会匹配的分支名来禁用所有触发
-  push:
-    branches:
-      - 'workflow-disabled-do-not-use'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.0.0)'
+        required: true
+        type: string
 
 env:
   APP_NAME: MyAgents
