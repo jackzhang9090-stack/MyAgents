@@ -5,12 +5,12 @@
  * Provides play/stop control and state callbacks for UI updates.
  */
 import { isTauriEnvironment } from '@/utils/browserMock';
+import { convertFileSrc } from '@tauri-apps/api/core';
 
 /** Convert a local file path to a playable audio URL */
 export function getAudioUrl(filePath: string): string {
   if (isTauriEnvironment()) {
-    const encoded = filePath.split('/').map(segment => encodeURIComponent(segment)).join('/');
-    return `asset://localhost/${encoded}`;
+    return convertFileSrc(filePath);
   }
   return `/api/audio?path=${encodeURIComponent(filePath)}`;
 }
