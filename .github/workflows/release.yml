@@ -74,6 +74,7 @@ jobs:
       - name: Build server bundle
         run: |
           bun build src/server/index.ts --outfile src-tauri/resources/server-dist.js --target bun
+          bun build src/server/plugin-bridge/index.ts --outfile src-tauri/resources/plugin-bridge-dist.js --target bun
 
       - name: Copy claude-agent-sdk
         run: |
