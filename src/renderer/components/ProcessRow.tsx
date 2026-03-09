@@ -27,6 +27,9 @@ const ProcessRow = memo(function ProcessRow({
 }: ProcessRowProps) {
     // User manually toggled state (null = not toggled, true/false = user choice)
     const [userToggled, setUserToggled] = useState<boolean | null>(null);
+    // Thinking elapsed time (real-time timer while thinking is active)
+    const [thinkingElapsed, setThinkingElapsed] = useState(0);
+    const thinkingTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
     // Task tool elapsed time (for running tasks)
     const [taskElapsed, setTaskElapsed] = useState(0);
     const taskTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
@@ -45,6 +48,34 @@ const ProcessRow = memo(function ProcessRow({
     const isTaskRunning = isTaskTool && block.tool?.isLoading && !block.tool?.result;
 
     const isBlockActive = isThinkingActive || isToolActive;
+
+    // Thinking timer - update elapsed time every second while thinking is active
+    useEffect(() => {
+        if (!isThinkingActive || !block.thinkingStartedAt) {
+            if (thinkingTimerRef.current) {
+                clearInterval(thinkingTimerRef.current);
+                thinkingTimerRef.current = undefined;
+            }
+            return;
+        }
+
+        const startTime = block.thinkingStartedAt;
+        const rafId = requestAnimationFrame(() => {
+            setThinkingElapsed(Date.now() - startTime);
+        });
+
+        thinkingTimerRef.current = setInterval(() => {
+            setThinkingElapsed(Date.now() - startTime);
+        }, 1000);
+
+        return () => {
+            cancelAnimationFrame(rafId);
+            if (thinkingTimerRef.current) {
+                clearInterval(thinkingTimerRef.current);
+                thinkingTimerRef.current = undefined;
+            }
+        };
+    }, [isThinkingActive, block.thinkingStartedAt]);
 
     // Task tool timer - update elapsed time every second while running
     useEffect(() => {
@@ -131,7 +162,8 @@ const ProcessRow = memo(function ProcessRow({
     if (isThinking) {
         const durationSec = block.thinkingDurationMs ? Math.round(block.thinkingDurationMs / 1000) : 0;
         if (isThinkingActive) {
-            mainLabel = '思考中…';
+            const elapsedSec = thinkingElapsed > 0 ? Math.round(thinkingElapsed / 1000) : 0;
+            mainLabel = elapsedSec > 0 ? `思考中… (${elapsedSec}s)` : '思考中…';
             icon = <Loader2 className="size-4 animate-spin" />;
         } else if (block.isFailed) {
             mainLabel = durationSec > 0 ? `思考失败 (${durationSec}s)` : '思考失败';
