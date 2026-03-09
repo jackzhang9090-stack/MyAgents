@@ -76,7 +76,7 @@ jobs:
           cp -R "$SDK_SRC/vendor" "$SDK_DEST/"
 
       - name: Build frontend
-        run: npm run build:web
+        run: bun run build:web
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
