@@ -20,6 +20,9 @@ jobs:
           - platform: macos-14
             target: aarch64-apple-darwin
             arch: aarch64
+          - platform: macos-14
+            target: x86_64-apple-darwin
+            arch: x64
 
     runs-on: ${{ matrix.platform }}
 
@@ -43,11 +46,17 @@ jobs:
           workspaces: src-tauri
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
+
+      - name: Create resource directories
+        run: |
+          mkdir -p src-tauri/resources/agent-browser-cli
+          mkdir -p mino
+          touch src-tauri/resources/agent-browser-cli/.gitkeep
+          touch mino/.gitkeep
 
       - name: Download Bun binary for bundling
         run: |
-          # Download the appropriate Bun binary for the target architecture
           if [ "${{ matrix.arch }}" = "aarch64" ]; then
             BUN_ARCH="aarch64"
           else
@@ -83,12 +92,10 @@ jobs:
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
-          # Increase Node.js memory limit for Vite build (default ~1.5GB is not enough)
           NODE_OPTIONS: "--max-old-space-size=4096"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS code signing (required for distribution)
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -113,7 +120,6 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
             src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
 
-  # Upload update manifests to R2
   publish-update:
     needs: build
     runs-on: ubuntu-latest
@@ -164,19 +170,15 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           DOWNLOAD_BASE_URL: https://download.myagents.io
         run: |
-          # Create update directory
           mkdir -p update-manifests
 
-          # Variables for latest.json
           PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           DMG_ARM64=""
           DMG_X64=""
 
-          # Process each architecture
           for target in "aarch64-apple-darwin" "x86_64-apple-darwin"; do
             echo "Processing $target..."
 
-            # Find the .tar.gz, .sig, and .dmg files
             TAR_GZ=$(find artifacts -name "*.app.tar.gz" -path "*${target}*" ! -name "*.sig" | head -1)
             SIG=$(find artifacts -name "*.app.tar.gz.sig" -path "*${target}*" | head -1)
             DMG=$(find artifacts -name "*.dmg" -path "*${target}*" | head -1)
@@ -190,19 +192,15 @@ jobs:
             echo "Found sig: $SIG"
             echo "Found dmg: $DMG"
 
-            # Get file names
             FILENAME=$(basename "$TAR_GZ")
             SIGNATURE=$(cat "$SIG")
 
-            # Upload tar.gz to R2 (for updater)
             rclone copy "$TAR_GZ" "r2:myagents-releases/releases/v${VERSION}/"
 
-            # Upload DMG to R2 (for website download)
             if [ -n "$DMG" ]; then
               DMG_FILENAME=$(basename "$DMG")
               rclone copy "$DMG" "r2:myagents-releases/releases/v${VERSION}/"
 
-              # Store DMG filename for latest.json
               if [ "$target" = "aarch64-apple-darwin" ]; then
                 DMG_ARM64="$DMG_FILENAME"
               else
@@ -210,14 +208,12 @@ jobs:
               fi
             fi
 
-            # Determine manifest filename based on target
             if [ "$target" = "aarch64-apple-darwin" ]; then
               MANIFEST_NAME="darwin-aarch64"
             else
               MANIFEST_NAME="darwin-x86_64"
             fi
 
-            # Generate update manifest JSON (for Tauri updater)
             printf '%s\n' \
               '{' \
               "  \"version\": \"${VERSION}\"," \
@@ -235,7 +231,6 @@ jobs:
             echo "Generated ${MANIFEST_NAME}.json"
           done
 
-          # Generate latest.json for website
           printf '%s\n' \
             '{' \
             "  \"version\": \"${VERSION}\"," \
@@ -256,7 +251,6 @@ jobs:
 
           echo "Generated latest.json"
 
-          # Upload all manifests to R2
           rclone copy update-manifests/ "r2:myagents-releases/update/"
 
           echo "Upload complete!"
