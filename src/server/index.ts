@@ -1063,6 +1063,84 @@ function startupBeacon(step: string): void {
 }
 
 async function main() {
+  // PATCH: Fix for Bun environments where setMaxListeners from events module doesn't work properly
+  // This prevents "undefined is not a function" errors in SDK
+  try {
+    const eventsModule = await import('events') as any;
+    if (typeof eventsModule.setMaxListeners !== 'function') {
+      console.warn('[patch] setMaxListeners is not a function, patching...');
+      // Provide a safe no-op implementation
+      eventsModule.setMaxListeners = function setMaxListenersWrapper(
+        n: number,
+        signal?: { addEventListener?: Function; removeEventListener?: Function; setMaxListeners?: Function }
+      ) {
+        if (!signal || typeof signal.addEventListener !== 'function') {
+          // If no valid signal provided, just return (no-op)
+          return;
+        }
+        // Otherwise attempt to set max listeners if the method exists
+        if (signal.setMaxListeners && typeof signal.setMaxListeners === 'function') {
+          signal.setMaxListeners(n);
+        }
+      };
+    }
+  } catch (e) {
+    console.warn('[patch] Failed to patch setMaxListeners:', e);
+    // If we can't import events, create a global patch
+    (globalThis as any).__patchedEvents = {
+      setMaxListeners: function setMaxListenersWrapper(
+        n: number,
+        signal?: { addEventListener?: Function; removeEventListener?: Function; setMaxListeners?: Function }
+      ) {
+        if (!signal || typeof signal.addEventListener !== 'function') {
+          return;
+        }
+        if (signal.setMaxListeners && typeof signal.setMaxListeners === 'function') {
+          signal.setMaxListeners(n);
+        }
+      }
+    };
+  }
+  // PATCH: Fix for Bun environments where setMaxListeners from events module doesn't work properly
+  // This prevents "undefined is not a function" errors in SDK
+  try {
+    const eventsModule = await import('events') as any;
+    if (typeof eventsModule.setMaxListeners !== 'function') {
+      console.warn('[patch] setMaxListeners is not a function, patching...');
+      // Provide a safe no-op implementation
+      eventsModule.setMaxListeners = function setMaxListenersWrapper(
+        n: number,
+        signal?: { addEventListener?: Function; removeEventListener?: Function; setMaxListeners?: Function }
+      ) {
+        if (!signal || typeof signal.addEventListener !== 'function') {
+          // If no valid signal provided, just return (no-op)
+          return;
+        }
+        // Otherwise attempt to set max listeners if the method exists
+        if (signal.setMaxListeners && typeof signal.setMaxListeners === 'function') {
+          signal.setMaxListeners(n);
+        }
+      };
+    }
+  } catch (e) {
+    console.warn('[patch] Failed to patch setMaxListeners:', e);
+    // If we can't import events, create a global patch
+    (globalThis as any).__patchedEvents = {
+      setMaxListeners: function setMaxListenersWrapper(
+        n: number,
+        signal?: { addEventListener?: Function; removeEventListener?: Function; setMaxListeners?: Function }
+      ) {
+        if (!signal || typeof signal.addEventListener !== 'function') {
+          return;
+        }
+        if (signal.setMaxListeners && typeof signal.setMaxListeners === 'function') {
+          signal.setMaxListeners(n);
+        }
+      }
+    };
+  }
+
+
   startupBeacon(`main() entered, pid=${process.pid}, platform=${process.platform}, argv=${process.argv.length} args`);
 
   const { agentDir, initialPrompt, port, sessionId: initialSessionId, noPreWarm } = parseArgs(process.argv);

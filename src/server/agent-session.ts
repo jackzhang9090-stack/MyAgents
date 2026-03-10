@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, symlinkSync, lstatSync, readFileSyn
 import { join, resolve, sep } from 'path';
 import { createRequire } from 'module';
 import { query, type Query, type SDKUserMessage, type AgentDefinition, type HookInput, type HookJSONOutput, type PostToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
-import { getScriptDir, getBundledBunDir, getAgentBrowserCliPath } from './utils/runtime';
+import { getScriptDir, getBundledBunDir, getAgentBrowserCliPath, getBundledRuntimePath } from './utils/runtime';
 import { getCrossPlatformEnv, isSkillBlockedOnPlatform } from './utils/platform';
 import { resizeImageIfNeeded, resizeToolImageContent } from './utils/imageResize';
 import { cronToolsServer, getCronTaskContext, clearCronTaskContext } from './tools/cron-tools';
@@ -824,25 +824,9 @@ export function setSessionModel(model: string): void {
  * The pre-warmed session is invisible to the frontend until the first user message.
  */
 function schedulePreWarm(): void {
-  if (preWarmTimer) clearTimeout(preWarmTimer);
-  if (!agentDir) return;
-  if (preWarmDisabled) return;
-
-  // Stop retrying after consecutive failures to avoid infinite loop
-  if (preWarmFailCount >= PRE_WARM_MAX_RETRIES) {
-    console.warn(`[agent] pre-warm skipped: ${preWarmFailCount} consecutive failures, giving up`);
-    return;
-  }
-
-  preWarmTimer = setTimeout(() => {
-    preWarmTimer = null;
-    if (!isSessionActive() && agentDir) {
-      console.log('[agent] pre-warming SDK subprocess + MCP servers');
-      startStreamingSession(true).catch((error) => {
-        console.error('[agent] pre-warm failed:', error);
-      });
-    }
-  }, 500);
+  // 彻底禁用 pre-warm，避免预热和真实用户消息之间的冲突（修复白屏问题）
+  console.log('[agent] pre-warm disabled (fixed white screen issue)');
+  return;
 }
 
 /**
@@ -1946,6 +1930,8 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): NodeJS.Process
     // and break Anthropic subscription OAuth. User-level skills are synced as symlinks
     // into project .claude/skills/ by syncProjectUserConfig() instead.
   };
+  // Remove CLAUDECODE to allow SDK subprocess to start inside another Claude Code session
+  delete env.CLAUDECODE;
 
   // agent-browser: config is at ~/.agent-browser/config.json (default path, no env var needed)
 
@@ -3900,7 +3886,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       ...(sdkPermissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       model: currentModel, // Use currently selected model
       pathToClaudeCodeExecutable: resolveClaudeCodeCli(),
-      executable: 'bun' as const,
+      // Type assertion: SDK expects 'bun'|'node'|'deno' but getBundledRuntimePath returns path string
+      // The SDK will use this as the runtime name to find in PATH
+      executable: (getBundledRuntimePath().includes('bun') ? 'bun' : 'node') as 'bun' | 'node' | 'deno',
       env,
       stderr: (message: string) => {
         // Always log stderr to help diagnose subprocess issues (especially on older Windows)
