@@ -76,6 +76,11 @@ export function getShellPath(): string {
     // macOS/Linux: Try to detect shell PATH
     try {
         const shell = process.env.SHELL || '/bin/zsh';
+        // Check if execSync is available (may not be in bundled environment)
+        if (typeof execSync !== 'function') {
+            console.warn('[shell] execSync not available, using fallback PATH');
+            throw new Error('execSync not available');
+        }
         const detectedPath = execSync(`${shell} -l -c 'echo $PATH'`, {
             encoding: 'utf-8',
             timeout: 2000,
