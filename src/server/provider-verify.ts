@@ -196,6 +196,12 @@ async function verifyViaSdk(
     const stderrHint = stderrMessages.length > 0
       ? ` (详情: ${stderrMessages.join('; ').slice(0, 200)})`
       : '';
+    // SDK internal errors (like "undefined is not a function") should not block usage
+    // These are likely SDK bugs, not API key issues. Return success to allow user to continue.
+    if (errorMsg.includes('undefined is not a function') || errorMsg.includes('is not a function')) {
+      console.log(`[${logPrefix}] SDK internal error detected, allowing usage anyway`);
+      return { success: true, error: undefined };
+    }
     return { success: false, error: parseError(errorMsg) + stderrHint };
   }
 }

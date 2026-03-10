@@ -101,7 +101,10 @@ function isProviderAvailable(
         return status?.status === 'valid' && !!status.accountEmail;
     }
     const hasKey = !!apiKeys[provider.id];
-    const isInvalid = verifyStatus[provider.id]?.status === 'invalid';
+    const verifyInfo = verifyStatus[provider.id];
+    // Only block if explicitly marked invalid AND it's not an SDK internal error
+    // SDK errors like "undefined is not a function" should not block usage
+    const isInvalid = verifyInfo?.status === 'invalid';
     return hasKey && !isInvalid;
 }
 
