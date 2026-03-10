@@ -1,6 +1,13 @@
-import { execSync } from 'child_process';
 import { join } from 'path';
 import { readdirSync, existsSync } from 'fs';
+
+// Lazy import execSync to handle bundled environment
+let _execSync: typeof import('child_process').execSync | undefined;
+try {
+    _execSync = require('child_process').execSync;
+} catch {
+    // In bundled environment, child_process may not be available
+}
 
 const isWindows = process.platform === 'win32';
 const PATH_SEPARATOR = isWindows ? ';' : ':';
@@ -75,13 +82,12 @@ export function getShellPath(): string {
 
     // macOS/Linux: Try to detect shell PATH
     try {
-        const shell = process.env.SHELL || '/bin/zsh';
-        // Check if execSync is available (may not be in bundled environment)
-        if (typeof execSync !== 'function') {
+        if (!_execSync) {
             console.warn('[shell] execSync not available, using fallback PATH');
             throw new Error('execSync not available');
         }
-        const detectedPath = execSync(`${shell} -l -c 'echo $PATH'`, {
+        const shell = process.env.SHELL || '/bin/zsh';
+        const detectedPath = _execSync(`${shell} -l -c 'echo $PATH'`, {
             encoding: 'utf-8',
             timeout: 2000,
             stdio: ['ignore', 'pipe', 'ignore']
