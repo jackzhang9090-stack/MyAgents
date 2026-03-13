@@ -75,12 +75,4 @@ export default defineConfig({
     // index.js is ~2100KB due to heavy visualization libs (mermaid, cytoscape)
     chunkSizeWarningLimit: 2500
   }
-    outDir: resolve(__dirname, 'dist'),
-    emptyOutDir: true,
-    // Target Safari 15+ (macOS 12+) for compatibility with named capture groups
-    target: ['chrome107', 'edge107', 'firefox104', 'safari15'],
-    // Suppress warning about large chunks
-    // index.js is ~2100KB due to heavy visualization libs (mermaid, cytoscape)
-    chunkSizeWarningLimit: 2500
-  }
 });
