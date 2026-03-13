@@ -100,6 +100,24 @@ jobs:
           APPLE_SIGNING_IDENTITY: "-"
           # Skip updater signing (no private key)
           TAURI_SIGNING_PRIVATE_KEY: ""
+          # Support macOS 12.0+
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'MyAgents v__VERSION__'
+          releaseBody: 'See the assets to download this version and install.'
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }} --bundles app,dmg
+        uses: tauri-apps/tauri-action@v0
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Skip code signing for now (no Apple Developer certificate)
+          APPLE_SIGNING_IDENTITY: "-"
+          # Skip updater signing (no private key)
+          TAURI_SIGNING_PRIVATE_KEY: ""
         with:
           tagName: v__VERSION__
           releaseName: 'MyAgents v__VERSION__'
