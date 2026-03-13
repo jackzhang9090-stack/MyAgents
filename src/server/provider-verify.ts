@@ -7,9 +7,17 @@ import { randomUUID } from 'crypto';
 import { homedir } from 'os';
 import { join } from 'path';
 import { existsSync, readFileSync, mkdirSync } from 'fs';
-import { execSync } from 'child_process';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { resolveClaudeCodeCli, buildClaudeSessionEnv } from './agent-session';
+
+// Lazy import execSync to handle bundled environment
+let _execSync: typeof import('child_process').execSync | undefined;
+try {
+  _execSync = require('child_process').execSync;
+} catch {
+  // In bundled environment, child_process may not be available
+}
+
 // Subscription types (keep in sync with src/renderer/types/subscription.ts)
 export interface SubscriptionInfo {
   accountUuid?: string;
@@ -296,8 +304,12 @@ export async function verifySubscription(): Promise<{ success: boolean; error?: 
  * Returns undefined if not a git repository
  */
 export function getGitBranch(cwd: string): string | undefined {
+  // Check if execSync is available (may not be in bundled environment)
+  if (!_execSync) {
+    return undefined;
+  }
   try {
-    const branch = execSync('git rev-parse --abbrev-ref HEAD', {
+    const branch = _execSync('git rev-parse --abbrev-ref HEAD', {
       cwd,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'], // Suppress stderr
@@ -308,3 +320,4 @@ export function getGitBranch(cwd: string): string | undefined {
     return undefined;
   }
 }
+
