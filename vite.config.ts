@@ -69,6 +69,14 @@ export default defineConfig({
   build: {
     outDir: resolve(__dirname, 'dist'),
     emptyOutDir: true,
+    // Target Safari 14 (macOS 11) for maximum compatibility with older systems
+    target: ['es2020', 'safari14', 'chrome80', 'firefox78'],
+    // Suppress warning about large chunks
+    // index.js is ~2100KB due to heavy visualization libs (mermaid, cytoscape)
+    chunkSizeWarningLimit: 2500
+  }
+    outDir: resolve(__dirname, 'dist'),
+    emptyOutDir: true,
     // Target Safari 15+ (macOS 12+) for compatibility with named capture groups
     target: ['chrome107', 'edge107', 'firefox104', 'safari15'],
     // Suppress warning about large chunks
