@@ -69,7 +69,8 @@ export default defineConfig({
   build: {
     outDir: resolve(__dirname, 'dist'),
     emptyOutDir: true,
-    // Target ES2019 for maximum compatibility (Safari 13 / macOS 10.14+)
+    // Target ES2017 for maximum compatibility (Safari 12 / macOS 10.13+)
+    target: 'es2017',
     target: 'es2019',
     // Suppress warning about large chunks
     // index.js is ~2100KB due to heavy visualization libs (mermaid, cytoscape)
