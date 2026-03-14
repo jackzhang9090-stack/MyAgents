@@ -9,5 +9,7 @@
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>zh-Hans</string>
+	<key>LSUIElement</key>
+	<true/>
 </dict>
 </plist>
