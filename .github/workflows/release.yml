@@ -252,7 +252,7 @@ jobs:
 
           echo "Generated latest.json"
 
-          rclone copy update-manifests/ "r2:myagents-releases/update/"
+          # rclone copy update-manifests/ "r2:myagents-releases/update/"
 
           echo "Upload complete!"
           echo "Update endpoints:"
